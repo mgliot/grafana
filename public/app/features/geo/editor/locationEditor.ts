@@ -53,6 +53,17 @@ export function addLocationFields<TOptions>(
       });
       break;
 
+    case FrameGeometrySourceMode.GeoJSON:
+      builder.addFieldNamePicker({
+        path: `${prefix}geojson`,
+        name: 'GeoJSON field',
+        settings: {
+          filter: (f: Field) => f.type === FieldType.string,
+          noFieldsMessage: 'No strings fields found',
+        },
+      });
+      break;
+
     case FrameGeometrySourceMode.Lookup:
       builder
         .addFieldNamePicker({
