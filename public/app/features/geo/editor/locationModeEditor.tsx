@@ -51,6 +51,12 @@ export const LocationModeEditor = ({
       description: t('geo.location-more-editor.mode-options.description-geohash', 'Specify geohash field'),
     },
     {
+      value: FrameGeometrySourceMode.GeoJSON,
+      label: t('geo.location-more-editor.mode-options.label-geojson', 'GeoJSON'),
+      ariaLabel: selectors.components.Transforms.SpatialOperations.location.geojson.option,
+      description: t('geo.location-more-editor.mode-options.description-geojson', 'Specify geojson field'),
+    },
+    {
       value: FrameGeometrySourceMode.Lookup,
       label: t('geo.location-more-editor.mode-options.label-lookup', 'Lookup'),
       ariaLabel: selectors.components.Transforms.SpatialOperations.location.lookup.option,
