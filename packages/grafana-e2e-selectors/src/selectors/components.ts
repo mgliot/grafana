@@ -326,6 +326,10 @@ export const Components = {
           option: 'Geohash location option',
           geohashFieldLabel: 'root Geohash field field property editor',
         },
+        geojson: {
+          option: 'Geojson location option',
+          geohashFieldLabel: 'root Geojson field field property editor',
+        },
         lookup: {
           option: 'Lookup location option',
           lookupFieldLabel: 'root Lookup field field property editor',

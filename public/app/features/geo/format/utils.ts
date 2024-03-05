@@ -1,5 +1,6 @@
 import { Geometry, GeometryCollection, LineString, Point } from 'ol/geom';
 import { fromLonLat } from 'ol/proj';
+import GeoJSON from 'ol/format/GeoJSON';
 
 import { Field, FieldConfig, FieldType } from '@grafana/data';
 import { getCenterPoint } from 'app/features/transformers/spatial/utils';
@@ -19,6 +20,22 @@ export function pointFieldFromGeohash(geohash: Field<string>): Field<Geometry | 
       }
       return undefined;
     }),
+    config: hiddenTooltipField,
+  };
+}
+
+export function getGeoFieldFromGeoJSON(geojson: Field<String>): Field<Geometry | undefined> {
+  const count = geojson.values.length;
+  const geo = new Array<Geometry>(count);
+  for (let i = 0; i < geojson.values.length; i++) {
+    geo[i] = geojson.values.get(i)
+      ? new GeoJSON().readGeometry(geojson.values.get(i), { featureProjection: 'EPSG:3857' })
+      : new Geometry();
+  }
+  return {
+    name: 'Geometry',
+    type: FieldType.geo,
+    values: geo,
     config: hiddenTooltipField,
   };
 }
