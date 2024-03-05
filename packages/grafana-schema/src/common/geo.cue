@@ -18,12 +18,13 @@ MapLayerOptions: {
 		tooltip?: bool
 } @cuetsy(kind="interface") @grafana(TSVeneer="type")
 
-FrameGeometrySourceMode: "auto" | "geohash" |"coords" | "lookup" @cuetsy(kind="enum",memberNames="Auto|Geohash|Coords|Lookup")
+FrameGeometrySourceMode: "auto" | "geohash" | "geojson" | "coords" | "lookup" @cuetsy(kind="enum",memberNames="Auto|Geohash|GeoJSON|Coords|Lookup")
 
 FrameGeometrySource: {
 		mode: FrameGeometrySourceMode
 		// Field mappings
 		geohash?: string
+		geojson?: string
 		latitude?: string
 		longitude?: string
 		wkt?: string
