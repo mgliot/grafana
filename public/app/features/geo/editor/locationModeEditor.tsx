@@ -28,6 +28,12 @@ const MODE_OPTIONS = [
     description: 'Specify geohash field',
   },
   {
+    value: FrameGeometrySourceMode.GeoJSON,
+    label: 'GeoJSON',
+    ariaLabel: selectors.components.Transforms.SpatialOperations.location.geojson.option,
+    description: 'Specify geojson field',
+  },
+  {
     value: FrameGeometrySourceMode.Lookup,
     label: 'Lookup',
     ariaLabel: selectors.components.Transforms.SpatialOperations.location.lookup.option,
