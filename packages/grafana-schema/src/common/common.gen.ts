@@ -146,6 +146,7 @@ export interface MapLayerOptions {
 export enum FrameGeometrySourceMode {
   Auto = 'auto',
   Coords = 'coords',
+  GeoJSON = 'geojson',
   Geohash = 'geohash',
   Lookup = 'lookup',
 }
@@ -873,6 +874,7 @@ export interface FrameGeometrySource {
    * Field mappings
    */
   geohash?: string;
+  geojson?: string;
   latitude?: string;
   longitude?: string;
   lookup?: string;
