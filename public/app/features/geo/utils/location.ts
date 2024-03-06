@@ -94,7 +94,7 @@ export async function getLocationMatchers(src?: FrameGeometrySource): Promise<Lo
         info.geohash = () => undefined; // In manual mode, don't automatically find field
       }
       break;
-    case FrameGeometrySourceMode.Geojson:
+    case FrameGeometrySourceMode.GeoJSON:
       if (src?.geojson) {
         info.geojson = getFieldFinder(getFieldMatcher({ id: FieldMatcherID.byName, options: src.geojson }));
       } else {
@@ -239,7 +239,7 @@ export function getGeometryField(frame: DataFrame, location: LocationFieldMatche
         return {
           field: getGeoFieldFromGeoJSON(fields.geojson),
           derived: true,
-          description: `${fields.mode}: ${fields.geojson.name}`,
+          description: `${fields.mode}`,
         };
       }
       return {
