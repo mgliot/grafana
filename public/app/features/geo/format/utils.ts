@@ -1,6 +1,6 @@
+import GeoJSON from 'ol/format/GeoJSON';
 import { Geometry, GeometryCollection, LineString, Point } from 'ol/geom';
 import { fromLonLat } from 'ol/proj';
-import GeoJSON from 'ol/format/GeoJSON';
 
 import { Field, FieldConfig, FieldType } from '@grafana/data';
 import { getCenterPoint } from 'app/features/transformers/spatial/utils';
