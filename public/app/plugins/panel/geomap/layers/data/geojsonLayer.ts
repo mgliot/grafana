@@ -1,6 +1,5 @@
-import { FeatureLike } from 'ol/Feature';
+import Feature, { FeatureLike } from 'ol/Feature';
 import Map from 'ol/Map';
-import { unByKey } from 'ol/Observable';
 import GeoJSON from 'ol/format/GeoJSON';
 import VectorImage from 'ol/layer/VectorImage';
 import VectorSource from 'ol/source/Vector';
@@ -8,8 +7,9 @@ import { Style } from 'ol/style';
 import { ReplaySubject } from 'rxjs';
 import { map as rxjsmap, first } from 'rxjs/operators';
 
-import { MapLayerRegistryItem, MapLayerOptions, GrafanaTheme2, EventBus } from '@grafana/data';
+import { MapLayerRegistryItem, MapLayerOptions, PanelData, GrafanaTheme2, EventBus } from '@grafana/data';
 import { ComparisonOperation } from '@grafana/schema';
+import { findField } from 'app/features/dimensions';
 
 import { GeomapStyleRulesEditor } from '../../editor/GeomapStyleRulesEditor';
 import { StyleEditor } from '../../editor/StyleEditor';
@@ -27,11 +27,11 @@ import { getStyleConfigState } from '../../style/utils';
 import { FeatureRuleConfig, FeatureStyleConfig } from '../../types';
 import { checkFeatureMatchesStyleRule } from '../../utils/checkFeatureMatchesStyleRule';
 import { getLayerPropertyInfo } from '../../utils/getFeatures';
-import { getPublicGeoJSONFiles } from '../../utils/utils';
+import { getStyleDimension } from '../../utils/utils';
 
 export interface GeoJSONMapperConfig {
-  // URL for a geojson file
-  src?: string;
+  // Field Name in data query
+  geojson?: string
 
   // Pick style based on a rule
   rules: FeatureStyleConfig[];
@@ -41,7 +41,6 @@ export interface GeoJSONMapperConfig {
 }
 
 const defaultOptions: GeoJSONMapperConfig = {
-  src: 'public/maps/countries.geojson',
   rules: [],
   style: defaultStyleConfig,
 };
@@ -65,7 +64,7 @@ export const DEFAULT_STYLE_RULE: FeatureStyleConfig = {
 export const geojsonLayer: MapLayerRegistryItem<GeoJSONMapperConfig> = {
   id: 'geojson',
   name: 'GeoJSON',
-  description: 'Load static data from a geojson file',
+  description: 'Load data from a geojson field in a query',
   isBaseMap: false,
 
   /**
@@ -76,19 +75,10 @@ export const geojsonLayer: MapLayerRegistryItem<GeoJSONMapperConfig> = {
     const config = { ...defaultOptions, ...options.config };
 
     const source = new VectorSource({
-      url: config.src,
       format: new GeoJSON(),
     });
 
     const features = new ReplaySubject<FeatureLike[]>();
-
-    const key = source.on('change', () => {
-      //one geojson loads
-      if (source.getState() === 'ready') {
-        unByKey(key);
-        features.next(source.getFeatures());
-      }
-    });
 
     const styles: StyleCheckerState[] = [];
     if (config.rules) {
@@ -108,6 +98,8 @@ export const geojsonLayer: MapLayerRegistryItem<GeoJSONMapperConfig> = {
         state: s,
       });
     }
+
+    const style = await getStyleConfigState(config.style);
 
     const polyStyleStrings: string[] = Object.values(GeoJSONPolyStyles);
     const pointStyleStrings: string[] = Object.values(GeoJSONPointStyles);
@@ -181,6 +173,26 @@ export const geojsonLayer: MapLayerRegistryItem<GeoJSONMapperConfig> = {
 
     return {
       init: () => vectorLayer,
+      update: (data: PanelData) => {
+        source.clear();
+        if (!data.series?.length) {
+          features.next([]);
+          return; // if empty, no features available in map
+        }
+
+        for (const frame of data.series) {
+          const field = findField(frame, config.geojson);
+          if (field) {
+            style.dims = getStyleDimension(frame, style, theme);
+            for (let i = 0; i < field.values.length; i++) {
+              source.addFeature(field.values.get(i)
+                ? new GeoJSON().readFeature(field.values.get(i), { featureProjection: 'EPSG:3857' }) : new Feature());
+            }
+            features.next(source.getFeatures());
+            break;
+          }
+        }
+      },
       registerOptionsUI: (builder) => {
         // get properties for first feature to use as ui options
         const layerInfo = features.pipe(
@@ -189,14 +201,9 @@ export const geojsonLayer: MapLayerRegistryItem<GeoJSONMapperConfig> = {
         );
 
         builder
-          .addSelect({
-            path: 'config.src',
-            name: 'GeoJSON URL',
-            settings: {
-              options: getPublicGeoJSONFiles() ?? [],
-              allowCustomValue: true,
-            },
-            defaultValue: defaultOptions.src,
+          .addFieldNamePicker({
+            path: 'config.geojson',
+            name: 'GeoJSON Field',
           })
           .addCustomEditor({
             id: 'config.style',
