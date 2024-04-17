@@ -12,12 +12,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana/pkg/api/dtos"
 	"github.com/grafana/grafana/pkg/infra/log"
 	"github.com/grafana/grafana/pkg/infra/log/logtest"
@@ -27,11 +27,13 @@ import (
 	"github.com/grafana/grafana/pkg/plugins/manager/fakes"
 	"github.com/grafana/grafana/pkg/plugins/manager/filestore"
 	"github.com/grafana/grafana/pkg/plugins/manager/registry"
-	"github.com/grafana/grafana/pkg/plugins/plugindef"
+	"github.com/grafana/grafana/pkg/plugins/pfs"
 	"github.com/grafana/grafana/pkg/plugins/pluginscdn"
 	ac "github.com/grafana/grafana/pkg/services/accesscontrol"
 	"github.com/grafana/grafana/pkg/services/accesscontrol/acimpl"
 	"github.com/grafana/grafana/pkg/services/accesscontrol/actest"
+	"github.com/grafana/grafana/pkg/services/authn"
+	"github.com/grafana/grafana/pkg/services/authn/authntest"
 	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
 	"github.com/grafana/grafana/pkg/services/org"
 	"github.com/grafana/grafana/pkg/services/org/orgtest"
@@ -94,6 +96,16 @@ func Test_PluginsInstallAndUninstall(t *testing.T) {
 					ID: pluginID,
 				},
 			})
+
+			expectedIdentity := &authn.Identity{
+				OrgID:       tc.permissionOrg,
+				Permissions: map[int64]map[string][]string{},
+				OrgRoles:    map[int64]org.RoleType{},
+			}
+			expectedIdentity.Permissions[tc.permissionOrg] = ac.GroupScopesByAction(tc.permissions)
+			hs.authnService = &authntest.FakeService{
+				ExpectedIdentity: expectedIdentity,
+			}
 		})
 
 		t.Run(testName("Install", tc), func(t *testing.T) {
@@ -658,8 +670,8 @@ func TestHTTPServer_hasPluginRequestedPermissions(t *testing.T) {
 	pluginReg := pluginstore.Plugin{
 		JSONData: plugins.JSONData{
 			ID: "grafana-test-app",
-			IAM: &plugindef.IAM{
-				Permissions: []plugindef.Permission{{Action: ac.ActionUsersRead, Scope: newStr(ac.ScopeUsersAll)}, {Action: ac.ActionUsersCreate}},
+			IAM: &pfs.IAM{
+				Permissions: []pfs.Permission{{Action: ac.ActionUsersRead, Scope: newStr(ac.ScopeUsersAll)}, {Action: ac.ActionUsersCreate}},
 			},
 		},
 	}
@@ -733,6 +745,14 @@ func TestHTTPServer_hasPluginRequestedPermissions(t *testing.T) {
 			hs.log = logger
 			hs.accesscontrolService = actest.FakeService{}
 			hs.AccessControl = acimpl.ProvideAccessControl(hs.Cfg)
+
+			expectedIdentity := &authn.Identity{
+				OrgID:       tt.orgID,
+				Permissions: tt.permissions,
+			}
+			hs.authnService = &authntest.FakeService{
+				ExpectedIdentity: expectedIdentity,
+			}
 
 			c := &contextmodel.ReqContext{
 				Context:      &web.Context{Req: httpReq},

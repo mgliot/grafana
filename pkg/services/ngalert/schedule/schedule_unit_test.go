@@ -63,7 +63,7 @@ func TestProcessTicks(t *testing.T) {
 	}
 
 	cacheServ := &datasources.FakeCacheService{}
-	evaluator := eval.NewEvaluatorFactory(setting.UnifiedAlertingSettings{}, cacheServ, expr.ProvideService(&setting.Cfg{ExpressionsEnabled: true}, nil, nil, &featuremgmt.FeatureManager{}, nil, tracing.InitializeTracerForTest()), &pluginstore.FakePluginStore{})
+	evaluator := eval.NewEvaluatorFactory(setting.UnifiedAlertingSettings{}, cacheServ, expr.ProvideService(&setting.Cfg{ExpressionsEnabled: true}, nil, nil, featuremgmt.WithFeatures(), nil, tracing.InitializeTracerForTest()), &pluginstore.FakePluginStore{})
 
 	schedCfg := SchedulerCfg{
 		BaseInterval:     cfg.BaseInterval,
@@ -360,11 +360,12 @@ func TestSchedule_deleteAlertRule(t *testing.T) {
 	t.Run("when rule exists", func(t *testing.T) {
 		t.Run("it should stop evaluation loop and remove the controller from registry", func(t *testing.T) {
 			sch := setupScheduler(t, nil, nil, nil, nil, nil)
+			ruleFactory := ruleFactoryFromScheduler(sch)
 			rule := models.AlertRuleGen()()
 			key := rule.GetKey()
-			info, _ := sch.registry.getOrCreateInfo(context.Background(), key)
+			info, _ := sch.registry.getOrCreate(context.Background(), key, ruleFactory)
 			sch.deleteAlertRule(key)
-			require.ErrorIs(t, info.ctx.Err(), errRuleDeleted)
+			require.ErrorIs(t, info.(*alertRule).ctx.Err(), errRuleDeleted)
 			require.False(t, sch.registry.exists(key))
 		})
 	})
@@ -393,7 +394,7 @@ func setupScheduler(t *testing.T, rs *fakeRulesStore, is *state.FakeInstanceStor
 
 	var evaluator = evalMock
 	if evalMock == nil {
-		evaluator = eval.NewEvaluatorFactory(setting.UnifiedAlertingSettings{}, nil, expr.ProvideService(&setting.Cfg{ExpressionsEnabled: true}, nil, nil, &featuremgmt.FeatureManager{}, nil, tracing.InitializeTracerForTest()), &pluginstore.FakePluginStore{})
+		evaluator = eval.NewEvaluatorFactory(setting.UnifiedAlertingSettings{}, nil, expr.ProvideService(&setting.Cfg{ExpressionsEnabled: true}, nil, nil, featuremgmt.WithFeatures(), nil, tracing.InitializeTracerForTest()), &pluginstore.FakePluginStore{})
 	}
 
 	if registry == nil {
