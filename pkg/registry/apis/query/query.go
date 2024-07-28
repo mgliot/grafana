@@ -5,27 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/experimental/apis/data/v0alpha1"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"golang.org/x/sync/errgroup"
 	errorsK8s "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
 
 	query "github.com/grafana/grafana/pkg/apis/query/v0alpha1"
 	"github.com/grafana/grafana/pkg/expr/mathexp"
 	"github.com/grafana/grafana/pkg/infra/log"
 	"github.com/grafana/grafana/pkg/services/datasources"
-	"github.com/grafana/grafana/pkg/util/errutil"
 	"github.com/grafana/grafana/pkg/web"
 )
 
 type queryREST struct {
+	logger  log.Logger
 	builder *QueryAPIBuilder
 }
 
@@ -36,6 +39,13 @@ var (
 	_ rest.Scoper               = (*queryREST)(nil)
 	_ rest.StorageMetadata      = (*queryREST)(nil)
 )
+
+func newQueryREST(builder *QueryAPIBuilder) *queryREST {
+	return &queryREST{
+		logger:  log.New("query"),
+		builder: builder,
+	}
+}
 
 func (r *queryREST) New() runtime.Object {
 	// This is added as the "ResponseType" regarless what ProducesObject() says :)
@@ -68,8 +78,8 @@ func (r *queryREST) NewConnectOptions() (runtime.Object, bool, string) {
 	return nil, false, "" // true means you can use the trailing path as a variable
 }
 
-func (r *queryREST) Connect(ctx context.Context, name string, opts runtime.Object, responder rest.Responder) (http.Handler, error) {
-	// See: /pkg/apiserver/builder/helper.go#L34
+func (r *queryREST) Connect(connectCtx context.Context, name string, _ runtime.Object, incomingResponder rest.Responder) (http.Handler, error) {
+	// See: /pkg/services/apiserver/builder/helper.go#L34
 	// The name is set with a rewriter hack
 	if name != "name" {
 		return nil, errorsK8s.NewNotFound(schema.GroupResource{}, name)
@@ -79,6 +89,22 @@ func (r *queryREST) Connect(ctx context.Context, name string, opts runtime.Objec
 	return http.HandlerFunc(func(w http.ResponseWriter, httpreq *http.Request) {
 		ctx, span := b.tracer.Start(httpreq.Context(), "QueryService.Query")
 		defer span.End()
+		ctx = request.WithNamespace(ctx, request.NamespaceValue(connectCtx))
+
+		responder := newResponderWrapper(incomingResponder,
+			func(statusCode int, obj runtime.Object) {
+				if statusCode >= 400 {
+					span.SetStatus(codes.Error, fmt.Sprintf("error with HTTP status code %s", strconv.Itoa(statusCode)))
+				}
+			},
+			func(err error) {
+				span.SetStatus(codes.Error, "query error")
+				if err == nil {
+					return
+				}
+
+				span.RecordError(err)
+			})
 
 		raw := &query.QueryDataRequest{}
 		err := web.Bind(httpreq, raw)
@@ -92,7 +118,6 @@ func (r *queryREST) Connect(ctx context.Context, name string, opts runtime.Objec
 			responder.Error(err)
 			return
 		}
-
 		// Parses the request and splits it into multiple sub queries (if necessary)
 		req, err := b.parser.parseRequest(ctx, raw)
 		if err != nil {
@@ -105,14 +130,14 @@ func (r *queryREST) Connect(ctx context.Context, name string, opts runtime.Objec
 					Message: "datasource not found",
 				}}
 			}
-			responder.Error(convertToK8sError(err))
+			responder.Error(err)
 			return
 		}
 
 		// Actually run the query
 		rsp, err := b.execute(ctx, req)
 		if err != nil {
-			responder.Error(convertToK8sError(err))
+			responder.Error(err)
 			return
 		}
 
@@ -122,24 +147,10 @@ func (r *queryREST) Connect(ctx context.Context, name string, opts runtime.Objec
 	}), nil
 }
 
-// Would be really nice if errutil was directly k8s compatible :(
-func convertToK8sError(err error) error {
-	var gErr errutil.Error
-	if errors.As(err, &gErr) {
-		return &errorsK8s.StatusError{ErrStatus: metav1.Status{
-			Status:  metav1.StatusFailure,
-			Code:    int32(gErr.Reason.Status().HTTPStatus()),
-			Reason:  metav1.StatusReason(gErr.Reason.Status()), // almost true
-			Message: gErr.PublicMessage,
-		}}
-	}
-	return err
-}
-
 func (b *QueryAPIBuilder) execute(ctx context.Context, req parsedRequestInfo) (qdr *backend.QueryDataResponse, err error) {
 	switch len(req.Requests) {
 	case 0:
-		break // nothing to do
+		qdr = &backend.QueryDataResponse{}
 	case 1:
 		qdr, err = b.handleQuerySingleDatasource(ctx, req.Requests[0])
 	default:
@@ -292,7 +303,7 @@ func (b *QueryAPIBuilder) executeConcurrentQueries(ctx context.Context, requests
 // Unlike the implementation in expr/node.go, all datasource queries have been processed first
 func (b *QueryAPIBuilder) handleExpressions(ctx context.Context, req parsedRequestInfo, data *backend.QueryDataResponse) (qdr *backend.QueryDataResponse, err error) {
 	start := time.Now()
-	ctx, span := b.tracer.Start(ctx, "SSE.handleExpressions")
+	ctx, span := b.tracer.Start(ctx, "Query.handleExpressions")
 	defer func() {
 		var respStatus string
 		switch {
@@ -351,4 +362,34 @@ func (b *QueryAPIBuilder) handleExpressions(ctx context.Context, req parsedReque
 		}
 	}
 	return qdr, nil
+}
+
+type responderWrapper struct {
+	wrapped    rest.Responder
+	onObjectFn func(statusCode int, obj runtime.Object)
+	onErrorFn  func(err error)
+}
+
+func newResponderWrapper(responder rest.Responder, onObjectFn func(statusCode int, obj runtime.Object), onErrorFn func(err error)) *responderWrapper {
+	return &responderWrapper{
+		wrapped:    responder,
+		onObjectFn: onObjectFn,
+		onErrorFn:  onErrorFn,
+	}
+}
+
+func (r responderWrapper) Object(statusCode int, obj runtime.Object) {
+	if r.onObjectFn != nil {
+		r.onObjectFn(statusCode, obj)
+	}
+
+	r.wrapped.Object(statusCode, obj)
+}
+
+func (r responderWrapper) Error(err error) {
+	if r.onErrorFn != nil {
+		r.onErrorFn(err)
+	}
+
+	r.wrapped.Error(err)
 }

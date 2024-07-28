@@ -1,9 +1,11 @@
 import { configureStore as reduxConfigureStore, createListenerMiddleware } from '@reduxjs/toolkit';
 import { setupListeners } from '@reduxjs/toolkit/query';
+import { Middleware } from 'redux';
 
 import { browseDashboardsAPI } from 'app/features/browse-dashboards/api/browseDashboardsAPI';
 import { publicDashboardApi } from 'app/features/dashboard/api/publicDashboardApi';
 import { cloudMigrationAPI } from 'app/features/migrate-to-cloud/api';
+import { userPreferencesAPI } from 'app/features/preferences/api';
 import { StoreState } from 'app/types/store';
 
 import { buildInitialState } from '../core/reducers/navModel';
@@ -21,6 +23,11 @@ export function addRootReducer(reducers: any) {
 }
 
 const listenerMiddleware = createListenerMiddleware();
+const extraMiddleware: Middleware[] = [];
+
+export function addExtraMiddleware(middleware: Middleware) {
+  extraMiddleware.push(middleware);
+}
 
 export function configureStore(initialState?: Partial<StoreState>) {
   const store = reduxConfigureStore({
@@ -32,7 +39,9 @@ export function configureStore(initialState?: Partial<StoreState>) {
         publicDashboardApi.middleware,
         browseDashboardsAPI.middleware,
         cloudMigrationAPI.middleware,
-        queryLibraryApi.middleware
+        queryLibraryApi.middleware,
+        userPreferencesAPI.middleware,
+        ...extraMiddleware
       ),
     devTools: process.env.NODE_ENV !== 'production',
     preloadedState: {

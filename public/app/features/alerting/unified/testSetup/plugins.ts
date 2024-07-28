@@ -1,26 +1,8 @@
-import { RequestHandler } from 'msw';
-
 import { PluginMeta, PluginType } from '@grafana/data';
-import { config, setPluginExtensionsHook } from '@grafana/runtime';
+import { setPluginExtensionsHook } from '@grafana/runtime';
+import { SupportedPlugin } from 'app/features/alerting/unified/types/pluginBridges';
 
 import { mockPluginLinkExtension } from '../mocks';
-import { getPluginsHandler } from '../mocks/server/handlers/plugins';
-
-export function setupPlugins(plugins: PluginMeta[]): { apiHandlers: RequestHandler[] } {
-  plugins.forEach((plugin) => {
-    config.apps[plugin.id] = {
-      id: plugin.id,
-      path: plugin.baseUrl,
-      preload: true,
-      version: plugin.info.version,
-      angular: plugin.angular ?? { detected: false, hideDeprecation: false },
-    };
-  });
-
-  return {
-    apiHandlers: [getPluginsHandler(plugins)],
-  };
-}
 
 export function setupPluginsExtensionsHook() {
   setPluginExtensionsHook(() => ({
@@ -37,7 +19,7 @@ export function setupPluginsExtensionsHook() {
 
 export const plugins: PluginMeta[] = [
   {
-    id: 'grafana-slo-app',
+    id: SupportedPlugin.Slo,
     name: 'SLO dashboard',
     type: PluginType.app,
     enabled: true,
@@ -60,7 +42,7 @@ export const plugins: PluginMeta[] = [
     baseUrl: 'public/plugins/grafana-slo-app',
   },
   {
-    id: 'grafana-incident-app',
+    id: SupportedPlugin.Incident,
     name: 'Incident management',
     type: PluginType.app,
     enabled: true,
@@ -106,7 +88,7 @@ export const plugins: PluginMeta[] = [
     baseUrl: 'public/plugins/grafana-asserts-app',
   },
   {
-    id: 'grafana-oncall-app',
+    id: SupportedPlugin.OnCall,
     name: 'OnCall',
     type: PluginType.app,
     enabled: true,

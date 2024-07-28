@@ -14,12 +14,14 @@ import (
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	common "k8s.io/kube-openapi/pkg/common"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	playlist "github.com/grafana/grafana/pkg/apis/playlist/v0alpha1"
-	"github.com/grafana/grafana/pkg/apiserver/builder"
 	grafanarest "github.com/grafana/grafana/pkg/apiserver/rest"
+	"github.com/grafana/grafana/pkg/infra/kvstore"
+	"github.com/grafana/grafana/pkg/services/apiserver/builder"
 	"github.com/grafana/grafana/pkg/services/apiserver/endpoints/request"
-	"github.com/grafana/grafana/pkg/services/apiserver/utils"
-	"github.com/grafana/grafana/pkg/services/featuremgmt"
+	gapiutil "github.com/grafana/grafana/pkg/services/apiserver/utils"
 	playlistsvc "github.com/grafana/grafana/pkg/services/playlist"
 	"github.com/grafana/grafana/pkg/setting"
 )
@@ -31,19 +33,18 @@ type PlaylistAPIBuilder struct {
 	service    playlistsvc.Service
 	namespacer request.NamespaceMapper
 	gv         schema.GroupVersion
-	features   featuremgmt.FeatureToggles
 }
 
 func RegisterAPIService(p playlistsvc.Service,
 	apiregistration builder.APIRegistrar,
 	cfg *setting.Cfg,
-	features featuremgmt.FeatureToggles,
+	kvStore kvstore.KVStore,
+	registerer prometheus.Registerer,
 ) *PlaylistAPIBuilder {
 	builder := &PlaylistAPIBuilder{
 		service:    p,
 		namespacer: request.GetNamespaceMapper(cfg),
 		gv:         playlist.PlaylistResourceInfo.GroupVersion(),
-		features:   features,
 	}
 	apiregistration.RegisterAPI(builder)
 	return builder
@@ -83,7 +84,7 @@ func (b *PlaylistAPIBuilder) GetAPIGroupInfo(
 	scheme *runtime.Scheme,
 	codecs serializer.CodecFactory, // pointer?
 	optsGetter generic.RESTOptionsGetter,
-	dualWrite bool,
+	dualWriteBuilder grafanarest.DualWriteBuilder,
 ) (*genericapiserver.APIGroupInfo, error) {
 	apiGroupInfo := genericapiserver.NewDefaultAPIGroupInfo(playlist.GROUP, scheme, metav1.ParameterCodec, codecs)
 	storage := map[string]rest.Storage{}
@@ -93,7 +94,7 @@ func (b *PlaylistAPIBuilder) GetAPIGroupInfo(
 		service:    b.service,
 		namespacer: b.namespacer,
 	}
-	legacyStore.tableConverter = utils.NewTableConverter(
+	legacyStore.tableConverter = gapiutil.NewTableConverter(
 		resource.GroupResource(),
 		[]metav1.TableColumnDefinition{
 			{Name: "Name", Type: "string", Format: "name"},
@@ -117,17 +118,17 @@ func (b *PlaylistAPIBuilder) GetAPIGroupInfo(
 	storage[resource.StoragePath()] = legacyStore
 
 	// enable dual writes if a RESTOptionsGetter is provided
-	if optsGetter != nil && dualWrite {
+	if optsGetter != nil && dualWriteBuilder != nil {
 		store, err := newStorage(scheme, optsGetter, legacyStore)
 		if err != nil {
 			return nil, err
 		}
 
-		mode := grafanarest.Mode1
-		if b.features.IsEnabledGlobally(featuremgmt.FlagDualWritePlaylistsMode2) {
-			mode = grafanarest.Mode2
+		dualWriter, err := dualWriteBuilder(resourceInfo.GroupResource(), legacyStore, store)
+		if err != nil {
+			return nil, err
 		}
-		storage[resource.StoragePath()] = grafanarest.NewDualWriter(mode, legacyStore, store)
+		storage[resource.StoragePath()] = dualWriter
 	}
 
 	apiGroupInfo.VersionedResourcesStorageMap[playlist.VERSION] = storage
