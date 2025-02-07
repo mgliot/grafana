@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"strings"
 	"time"
@@ -75,6 +76,36 @@ type State struct {
 	EvaluationDuration   time.Duration
 }
 
+// Copy creates a shallow copy of the State except for labels and annotations.
+func (a *State) Copy() *State {
+	// Deep copy annotations and labels
+	annotationsCopy := make(map[string]string, len(a.Annotations))
+	maps.Copy(annotationsCopy, a.Annotations)
+	labelsCopy := make(data.Labels, len(a.Labels))
+	maps.Copy(labelsCopy, a.Labels)
+	return &State{
+		OrgID:                a.OrgID,
+		AlertRuleUID:         a.AlertRuleUID,
+		CacheID:              a.CacheID,
+		State:                a.State,
+		StateReason:          a.StateReason,
+		ResultFingerprint:    a.ResultFingerprint,
+		LatestResult:         a.LatestResult,
+		Error:                a.Error,
+		Image:                a.Image,
+		Annotations:          annotationsCopy,
+		Labels:               labelsCopy,
+		Values:               a.Values,
+		StartsAt:             a.StartsAt,
+		EndsAt:               a.EndsAt,
+		ResolvedAt:           a.ResolvedAt,
+		LastSentAt:           a.LastSentAt,
+		LastEvaluationString: a.LastEvaluationString,
+		LastEvaluationTime:   a.LastEvaluationTime,
+		EvaluationDuration:   a.EvaluationDuration,
+	}
+}
+
 func (a *State) GetRuleKey() models.AlertRuleKey {
 	return models.AlertRuleKey{
 		OrgID: a.OrgID,
@@ -141,25 +172,38 @@ func (a *State) Maintain(interval int64, evaluatedAt time.Time) {
 	a.EndsAt = nextEndsTime(interval, evaluatedAt)
 }
 
-// AddErrorAnnotations adds annotations to the state to indicate that an error occurred.
-func (a *State) AddErrorAnnotations(err error, rule *models.AlertRule) {
+// AddErrorInformation adds annotations to the state to indicate that an error occurred.
+// If addDatasourceInfoToLabels is true, the ref_id and datasource_uid are added to the labels,
+// otherwise, they are added to the annotations.
+func (a *State) AddErrorInformation(err error, rule *models.AlertRule, addDatasourceInfoToLabels bool) {
 	if err == nil {
 		return
 	}
 
 	a.Annotations["Error"] = err.Error()
+
 	// If the evaluation failed because a query returned an error then add the Ref ID and
-	// Datasource UID as labels
+	// Datasource UID as labels or annotations
 	var utilError errutil.Error
-	if errors.As(a.Error, &utilError) &&
-		(errors.Is(a.Error, expr.QueryError) || errors.Is(a.Error, expr.ConversionError)) {
+	if errors.As(err, &utilError) &&
+		(errors.Is(err, expr.QueryError) || errors.Is(err, expr.ConversionError)) {
 		for _, next := range rule.Data {
 			if next.RefID == utilError.PublicPayload["refId"].(string) {
-				a.Labels["ref_id"] = next.RefID
-				a.Labels["datasource_uid"] = next.DatasourceUID
+				if addDatasourceInfoToLabels {
+					a.Labels["ref_id"] = next.RefID
+					a.Labels["datasource_uid"] = next.DatasourceUID
+				} else {
+					a.Annotations["ref_id"] = next.RefID
+					a.Annotations["datasource_uid"] = next.DatasourceUID
+				}
 				break
 			}
 		}
+	} else {
+		// Remove the ref_id and datasource_uid from the annotations if they are present.
+		// It can happen if the alert state hasn't changed, but the error is different now.
+		delete(a.Annotations, "ref_id")
+		delete(a.Annotations, "datasource_uid")
 	}
 }
 
@@ -187,11 +231,6 @@ func (a *State) SetNextValues(result eval.Result) {
 		}
 	}
 	a.Values = newValues
-}
-
-// IsNormalStateWithNoReason returns true if the state is Normal and reason is empty
-func IsNormalStateWithNoReason(s *State) bool {
-	return s.State == eval.Normal && s.StateReason == ""
 }
 
 // StateTransition describes the transition from one state to another.
@@ -334,11 +373,12 @@ func resultError(state *State, rule *models.AlertRule, result eval.Result, logge
 		resultAlerting(state, rule, result, logger, models.StateReasonError)
 		// This is a special case where Alerting and Pending should also have an error and reason
 		state.Error = result.Error
+		state.AddErrorInformation(result.Error, rule, false)
 	case models.ErrorErrState:
 		if state.State == eval.Error {
 			prevEndsAt := state.EndsAt
 			state.Error = result.Error
-			state.AddErrorAnnotations(result.Error, rule)
+			state.AddErrorInformation(result.Error, rule, true)
 			state.Maintain(rule.IntervalSeconds, result.EvaluatedAt)
 			logger.Debug("Keeping state",
 				"state",
@@ -360,18 +400,20 @@ func resultError(state *State, rule *models.AlertRule, result eval.Result, logge
 				"next_ends_at",
 				nextEndsAt)
 			state.SetError(result.Error, result.EvaluatedAt, nextEndsAt)
-			state.AddErrorAnnotations(result.Error, rule)
+			state.AddErrorInformation(result.Error, rule, true)
 		}
 	case models.OkErrState:
 		logger.Debug("Execution error state is Normal", "handler", "resultNormal", "previous_handler", handlerStr)
 		resultNormal(state, rule, result, logger, "") // TODO: Should we add a reason?
+		state.AddErrorInformation(result.Error, rule, false)
 	case models.KeepLastErrState:
 		logger := logger.New("previous_handler", handlerStr)
 		resultKeepLast(state, rule, result, logger)
+		state.AddErrorInformation(result.Error, rule, false)
 	default:
 		err := fmt.Errorf("unsupported execution error state: %s", rule.ExecErrState)
 		state.SetError(err, state.StartsAt, nextEndsTime(rule.IntervalSeconds, result.EvaluatedAt))
-		state.Annotations["Error"] = err.Error()
+		state.AddErrorInformation(result.Error, rule, false)
 	}
 }
 
@@ -528,13 +570,24 @@ func (a *State) IsStale() bool {
 	return a.StateReason == models.StateReasonMissingSeries
 }
 
-// shouldTakeImage returns true if the state just has transitioned to alerting from another state,
-// transitioned to alerting in a previous evaluation but does not have a screenshot, or has just
-// been resolved.
-func shouldTakeImage(state, previousState eval.State, previousImage *models.Image, resolved bool) bool {
-	return resolved ||
-		state == eval.Alerting && previousState != eval.Alerting ||
-		state == eval.Alerting && previousImage == nil
+// shouldTakeImage determines whether a new image should be taken for a given transition. This should return true when
+// newly transitioning to an alerting state, when no valid image exists, or when the alert has been resolved.
+func shouldTakeImage(state, previousState eval.State, previousImage *models.Image, resolved bool) string {
+	if resolved {
+		return "resolved"
+	}
+	if state == eval.Alerting {
+		if previousState != eval.Alerting {
+			return "transition to alerting"
+		}
+		if previousImage == nil {
+			return "no image"
+		}
+		if previousImage.HasExpired() {
+			return "expired image"
+		}
+	}
+	return ""
 }
 
 // takeImage takes an image for the alert rule. It returns nil if screenshots are disabled or

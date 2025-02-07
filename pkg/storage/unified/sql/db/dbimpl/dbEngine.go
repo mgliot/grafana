@@ -7,27 +7,37 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
-	"go.opentelemetry.io/otel/trace"
 	"xorm.io/xorm"
 
-	"github.com/grafana/grafana/pkg/services/store/entity/db"
+	"github.com/grafana/grafana/pkg/storage/unified/sql/db"
 )
 
-func getEngineMySQL(getter *sectionGetter, _ trace.Tracer) (*xorm.Engine, error) {
+func getEngineMySQL(getter confGetter) (*xorm.Engine, error) {
 	config := mysql.NewConfig()
-	config.User = getter.String("db_user")
-	config.Passwd = getter.String("db_pass")
+	config.User = getter.String("user")
+	// accept the core Grafana jargon of `password` as well, originally Unified
+	// Storage used `pass`
+	config.Passwd = cmp.Or(getter.String("pass"), getter.String("password"))
 	config.Net = "tcp"
-	config.Addr = getter.String("db_host")
-	config.DBName = getter.String("db_name")
+	config.Addr = getter.String("host")
+	config.DBName = getter.String("name")
 	config.Params = map[string]string{
 		// See: https://dev.mysql.com/doc/refman/en/sql-mode.html
 		"@@SESSION.sql_mode": "ANSI",
+	}
+	sslMode := getter.String("ssl_mode")
+	if sslMode == "true" || sslMode == "skip-verify" {
+		config.Params["tls"] = "preferred"
+	}
+	tls := getter.String("tls")
+	if tls != "" {
+		config.Params["tls"] = tls
 	}
 	config.Collation = "utf8mb4_unicode_ci"
 	config.Loc = time.UTC
 	config.AllowNativePasswords = true
 	config.ClientFoundRows = true
+	config.ParseTime = true
 
 	// allow executing multiple SQL statements in a single roundtrip, and also
 	// enable executing the CALL statement to run stored procedures that execute
@@ -35,8 +45,8 @@ func getEngineMySQL(getter *sectionGetter, _ trace.Tracer) (*xorm.Engine, error)
 	//config.MultiStatements = true
 
 	// TODO: do we want to support these?
-	//	config.ServerPubKey = getter.String("db_server_pub_key")
-	//	config.TLSConfig = getter.String("db_tls_config_name")
+	//	config.ServerPubKey = getter.String("server_pub_key")
+	//	config.TLSConfig = getter.String("tls_config_name")
 
 	if err := getter.Err(); err != nil {
 		return nil, fmt.Errorf("config error: %w", err)
@@ -59,12 +69,18 @@ func getEngineMySQL(getter *sectionGetter, _ trace.Tracer) (*xorm.Engine, error)
 	return engine, nil
 }
 
-func getEnginePostgres(getter *sectionGetter, _ trace.Tracer) (*xorm.Engine, error) {
+func getEnginePostgres(getter confGetter) (*xorm.Engine, error) {
 	dsnKV := map[string]string{
-		"user":     getter.String("db_user"),
-		"password": getter.String("db_pass"),
-		"dbname":   getter.String("db_name"),
-		"sslmode":  cmp.Or(getter.String("db_sslmode"), "disable"),
+		"user": getter.String("user"),
+		// accept the core Grafana jargon of `password` as well, originally
+		// Unified Storage used `pass`
+		"password":    cmp.Or(getter.String("pass"), getter.String("password")),
+		"dbname":      getter.String("name"),
+		"sslmode":     cmp.Or(getter.String("ssl_mode"), "disable"),
+		"sslsni":      getter.String("ssl_sni"),
+		"sslrootcert": getter.String("ca_cert_path"),
+		"sslkey":      getter.String("client_key_path"),
+		"sslcert":     getter.String("client_cert_path"),
 	}
 
 	// TODO: probably interesting:
@@ -76,13 +92,12 @@ func getEnginePostgres(getter *sectionGetter, _ trace.Tracer) (*xorm.Engine, err
 	//	dsnKV["enable_experimental_alter_column_type_general"] = "true"
 
 	// TODO: do we want to support these options in the DSN as well?
-	//	"sslkey", "sslcert", "sslrootcert", "sslpassword", "sslsni", "krbspn",
-	//	"krbsrvname", "target_session_attrs", "service", "servicefile"
+	//	"sslpassword", "krbspn", "krbsrvname", "target_session_attrs", "service", "servicefile"
 
 	// More on Postgres connection string parameters:
 	//	https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING
 
-	hostport := getter.String("db_host")
+	hostport := getter.String("host")
 
 	if err := getter.Err(); err != nil {
 		return nil, fmt.Errorf("config error: %w", err)
@@ -90,7 +105,7 @@ func getEnginePostgres(getter *sectionGetter, _ trace.Tracer) (*xorm.Engine, err
 
 	host, port, err := splitHostPortDefault(hostport, "127.0.0.1", "5432")
 	if err != nil {
-		return nil, fmt.Errorf("invalid db_host: %w", err)
+		return nil, fmt.Errorf("invalid host: %w", err)
 	}
 	dsnKV["host"] = host
 	dsnKV["port"] = port

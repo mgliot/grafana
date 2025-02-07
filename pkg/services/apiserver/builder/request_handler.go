@@ -13,12 +13,17 @@ type requestHandler struct {
 	router *mux.Router
 }
 
-func getAPIHandler(delegateHandler http.Handler, restConfig *restclient.Config, builders []APIGroupBuilder) (http.Handler, error) {
+func GetCustomRoutesHandler(delegateHandler http.Handler, restConfig *restclient.Config, builders []APIGroupBuilder) (http.Handler, error) {
 	useful := false // only true if any routes exist anywhere
 	router := mux.NewRouter()
 
 	for _, builder := range builders {
-		routes := builder.GetAPIRoutes()
+		provider, ok := builder.(APIGroupRouteProvider)
+		if !ok || provider == nil {
+			continue
+		}
+
+		routes := provider.GetAPIRoutes()
 		if routes == nil {
 			continue
 		}

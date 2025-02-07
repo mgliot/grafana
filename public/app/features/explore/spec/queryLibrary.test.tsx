@@ -16,7 +16,6 @@ import {
   openQueryHistory,
   openQueryLibrary,
   submitAddToQueryLibrary,
-  switchToQueryHistory,
 } from './helper/interactions';
 import { setupExplore, waitForExplore } from './helper/setup';
 
@@ -28,12 +27,38 @@ interface MockQuery extends DataQuery {
   expr: string;
 }
 
+jest.mock('../QueryLibrary/utils/dataFetching', () => {
+  return {
+    __esModule: true,
+    ...jest.requireActual('../QueryLibrary/utils/dataFetching'),
+    useLoadUsers: () => {
+      return {
+        data: {
+          display: [
+            {
+              avatarUrl: '',
+              displayName: 'john doe',
+              identity: {
+                name: 'JohnDoe',
+                type: 'viewer',
+              },
+            },
+          ],
+        },
+        isLoading: false,
+        error: null,
+      };
+    },
+  };
+});
+
 jest.mock('@grafana/runtime', () => ({
   ...jest.requireActual('@grafana/runtime'),
   reportInteraction: (...args: object[]) => {
     reportInteractionMock(...args);
   },
   getAppEvents: () => testEventBus,
+  usePluginLinks: jest.fn().mockReturnValue({ links: [] }),
 }));
 
 jest.mock('app/core/core', () => ({
@@ -41,6 +66,9 @@ jest.mock('app/core/core', () => ({
     hasPermission: () => true,
     isSignedIn: true,
     getValidIntervals: (defaultIntervals: string[]) => defaultIntervals,
+    user: {
+      isSignedIn: true,
+    },
   },
 }));
 
@@ -77,6 +105,7 @@ function setupQueryLibrary() {
       queryHistory: [{ datasourceUid: 'loki', queries: [mockQuery] }],
       totalCount: 1,
     },
+    withAppChrome: true,
   });
 }
 
@@ -105,14 +134,12 @@ describe('QueryLibrary', () => {
     await waitForExplore();
     await openQueryLibrary();
     await assertQueryLibraryTemplateExists('loki', 'Loki Query Template');
-    await assertQueryLibraryTemplateExists('elastic', 'Elastic Query Template');
   });
 
   it('Shows add to query library button only when the toggle is enabled', async () => {
     setupQueryLibrary();
     await waitForExplore();
-    await openQueryLibrary();
-    await switchToQueryHistory();
+    await openQueryHistory();
     await assertQueryHistory(['{"expr":"TEST"}']);
     await assertAddToQueryLibraryButtonExists(true);
   });
@@ -130,15 +157,14 @@ describe('QueryLibrary', () => {
   it('Shows a notification when a template is added and hides the add button', async () => {
     setupQueryLibrary();
     await waitForExplore();
-    await openQueryLibrary();
-    await switchToQueryHistory();
+    await openQueryHistory();
     await assertQueryHistory(['{"expr":"TEST"}']);
     await addQueryHistoryToQueryLibrary();
     await submitAddToQueryLibrary({ description: 'Test' });
     expect(testEventBus.publish).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'alert-success',
-        payload: ['Query template successfully added to the library'],
+        payload: ['Query successfully saved to the library'],
       })
     );
     await assertAddToQueryLibraryButtonExists(false);

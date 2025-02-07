@@ -14,6 +14,7 @@ export enum ReducerID {
   variance = 'variance',
   stdDev = 'stdDev',
   last = 'last',
+  median = 'median',
   first = 'first',
   count = 'count',
   range = 'range',
@@ -279,6 +280,15 @@ export const fieldReducers = new Registry<FieldReducerInfo>(() => [
     preservesUnits: true,
   },
   {
+    id: ReducerID.median,
+    name: 'Median',
+    description: 'Median Value',
+    standard: false,
+    reduce: calculateMedian,
+    aliasIds: ['median'],
+    preservesUnits: true,
+  },
+  {
     id: ReducerID.variance,
     name: 'Variance',
     description: 'Variance of all values in a field',
@@ -414,7 +424,7 @@ const buildPercentileReducers = (percentiles = [...Array.from({ length: 99 }, (_
 
   percentiles.forEach((p) => {
     const percentile = p / 100;
-    const id = `p${p}` as ReducerID;
+    const id = `p${p}`;
     const name = `${p}${nth(p)} %`;
     const description = `${p}${nth(p)} percentile value`;
 
@@ -575,6 +585,7 @@ export function doStandardCalcs(field: Field, ignoreNulls: boolean, nullAsZero: 
   if (isNumber(calcs.firstNotNull) && isNumber(calcs.diff)) {
     calcs.diffperc = (calcs.diff / calcs.firstNotNull) * 100;
   }
+
   return calcs;
 }
 
@@ -693,4 +704,33 @@ function calculatePercentile(field: Field, percentile: number, ignoreNulls: bool
   const sorted = data.slice().sort((a, b) => a - b);
   const index = Math.round((sorted.length - 1) * percentile);
   return sorted[index];
+}
+
+function calculateMedian(field: Field<number>, ignoreNulls: boolean, nullAsZero: boolean): FieldCalcs {
+  const numbers: number[] = [];
+
+  for (let i = 0; i < field.values.length; i++) {
+    let currentValue = field.values[i];
+
+    if (currentValue == null) {
+      if (ignoreNulls) {
+        continue;
+      }
+      if (nullAsZero) {
+        currentValue = 0;
+      }
+    }
+
+    numbers.push(currentValue);
+  }
+
+  numbers.sort((a, b) => a - b);
+
+  const mid = Math.floor(numbers.length / 2);
+
+  if (numbers.length % 2 === 0) {
+    return { median: (numbers[mid - 1] + numbers[mid]) / 2 };
+  } else {
+    return { median: numbers[mid] };
+  }
 }

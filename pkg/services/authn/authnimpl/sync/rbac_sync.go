@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 
+	"golang.org/x/exp/maps"
+
+	claims "github.com/grafana/authlib/types"
 	"github.com/grafana/grafana/pkg/apimachinery/errutil"
-	"github.com/grafana/grafana/pkg/apimachinery/identity"
 	"github.com/grafana/grafana/pkg/infra/log"
 	"github.com/grafana/grafana/pkg/infra/tracing"
 	"github.com/grafana/grafana/pkg/services/accesscontrol"
+	"github.com/grafana/grafana/pkg/services/accesscontrol/permreg"
 	"github.com/grafana/grafana/pkg/services/authn"
 	"github.com/grafana/grafana/pkg/services/login"
 	"github.com/grafana/grafana/pkg/services/org"
@@ -19,18 +22,20 @@ var (
 	errSyncPermissionsForbidden = errutil.Forbidden("permissions.sync.forbidden")
 )
 
-func ProvideRBACSync(acService accesscontrol.Service, tracer tracing.Tracer) *RBACSync {
+func ProvideRBACSync(acService accesscontrol.Service, tracer tracing.Tracer, permRegistry permreg.PermissionRegistry) *RBACSync {
 	return &RBACSync{
-		ac:     acService,
-		log:    log.New("permissions.sync"),
-		tracer: tracer,
+		ac:           acService,
+		log:          log.New("permissions.sync"),
+		permRegistry: permRegistry,
+		tracer:       tracer,
 	}
 }
 
 type RBACSync struct {
-	ac     accesscontrol.Service
-	log    log.Logger
-	tracer tracing.Tracer
+	ac           accesscontrol.Service
+	permRegistry permreg.PermissionRegistry
+	log          log.Logger
+	tracer       tracing.Tracer
 }
 
 func (s *RBACSync) SyncPermissionsHook(ctx context.Context, ident *authn.Identity, _ *authn.Request) error {
@@ -54,7 +59,7 @@ func (s *RBACSync) SyncPermissionsHook(ctx context.Context, ident *authn.Identit
 	grouped := accesscontrol.GroupScopesByActionContext(ctx, permissions)
 
 	// Restrict access to the list of actions
-	actionsLookup := ident.ClientParams.FetchPermissionsParams.ActionsLookup
+	actionsLookup := ident.ClientParams.FetchPermissionsParams.RestrictedActions
 	if len(actionsLookup) > 0 {
 		filtered := make(map[string][]string, len(actionsLookup))
 		for _, action := range actionsLookup {
@@ -75,7 +80,8 @@ func (s *RBACSync) fetchPermissions(ctx context.Context, ident *authn.Identity) 
 
 	permissions := make([]accesscontrol.Permission, 0, 8)
 	roles := ident.ClientParams.FetchPermissionsParams.Roles
-	if len(roles) > 0 {
+	actions := ident.ClientParams.FetchPermissionsParams.AllowedActions
+	if len(roles) > 0 || len(actions) > 0 {
 		for _, role := range roles {
 			roleDTO, err := s.ac.GetRoleByName(ctx, ident.GetOrgID(), role)
 			if err != nil && !errors.Is(err, accesscontrol.ErrRoleNotFound) {
@@ -86,7 +92,20 @@ func (s *RBACSync) fetchPermissions(ctx context.Context, ident *authn.Identity) 
 				permissions = append(permissions, roleDTO.Permissions...)
 			}
 		}
-
+		for _, action := range actions {
+			scopes, ok := s.permRegistry.GetScopePrefixes(action)
+			if !ok {
+				s.log.Warn("Unknown action scopes", "action", action)
+				continue
+			}
+			if len(scopes) == 0 {
+				permissions = append(permissions, accesscontrol.Permission{Action: action})
+				continue
+			}
+			for scope := range scopes {
+				permissions = append(permissions, accesscontrol.Permission{Action: action, Scope: scope + "*"})
+			}
+		}
 		return permissions, nil
 	}
 
@@ -99,10 +118,6 @@ func (s *RBACSync) fetchPermissions(ctx context.Context, ident *authn.Identity) 
 }
 
 func cloudRolesToAddAndRemove(ident *authn.Identity) ([]string, []string, error) {
-	const (
-		expectedRolesToAddCount = 2
-		rolesToRemoveInitialCap = 4
-	)
 	// Since Cloud Admin/Editor/Viewer roles are not yet implemented one-to-one in the Grafana, it becomes a confusing experience for users,
 	// therefore we are doing granular mapping of all available functionality in the Grafana temporary.
 	var fixedCloudRoles = map[org.RoleType][]string{
@@ -111,8 +126,8 @@ func cloudRolesToAddAndRemove(ident *authn.Identity) ([]string, []string, error)
 		org.RoleAdmin:  {accesscontrol.FixedCloudAdminRole, accesscontrol.FixedCloudSupportTicketAdmin},
 	}
 
-	rolesToAdd := make([]string, 0, expectedRolesToAddCount)
-	rolesToRemove := make([]string, 0, rolesToRemoveInitialCap)
+	rolesToAdd := make(map[string]bool)
+	rolesToRemove := make([]string, 0, 4)
 
 	currentRole := ident.GetOrgRole()
 	_, validRole := fixedCloudRoles[currentRole]
@@ -121,21 +136,24 @@ func cloudRolesToAddAndRemove(ident *authn.Identity) ([]string, []string, error)
 		return nil, nil, errInvalidCloudRole.Errorf("invalid role: %s", currentRole)
 	}
 
+	// Add roles for the current role and track them
+	for _, fixedRole := range fixedCloudRoles[currentRole] {
+		rolesToAdd[fixedRole] = true
+	}
+
+	// Add roles to remove, ensuring we don't remove any that have been added
 	for role, fixedRoles := range fixedCloudRoles {
+		if role == currentRole {
+			continue
+		}
 		for _, fixedRole := range fixedRoles {
-			if role == currentRole {
-				rolesToAdd = append(rolesToAdd, fixedRole)
-			} else {
+			if _, ok := rolesToAdd[fixedRole]; !ok {
 				rolesToRemove = append(rolesToRemove, fixedRole)
 			}
 		}
 	}
 
-	if len(rolesToAdd) != expectedRolesToAddCount {
-		return nil, nil, errInvalidCloudRole.Errorf("invalid role: %s", currentRole)
-	}
-
-	return rolesToAdd, rolesToRemove, nil
+	return maps.Keys(rolesToAdd), rolesToRemove, nil
 }
 
 func (s *RBACSync) SyncCloudRoles(ctx context.Context, ident *authn.Identity, r *authn.Request) error {
@@ -147,12 +165,12 @@ func (s *RBACSync) SyncCloudRoles(ctx context.Context, ident *authn.Identity, r 
 		return nil
 	}
 
-	if !ident.ID.IsType(identity.TypeUser) {
+	if !ident.IsIdentityType(claims.TypeUser) {
 		s.log.FromContext(ctx).Debug("Skip syncing cloud role", "id", ident.ID)
 		return nil
 	}
 
-	userID, err := ident.ID.ParseInt()
+	userID, err := ident.GetInternalID()
 	if err != nil {
 		return err
 	}

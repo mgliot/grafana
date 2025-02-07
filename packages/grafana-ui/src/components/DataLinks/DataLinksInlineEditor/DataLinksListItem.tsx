@@ -4,8 +4,8 @@ import { Draggable } from '@hello-pangea/dnd';
 import { DataFrame, DataLink, GrafanaTheme2 } from '@grafana/data';
 
 import { useStyles2 } from '../../../themes';
-import { isCompactUrl } from '../../../utils/dataLinks';
-import { FieldValidationMessage } from '../../Forms/FieldValidationMessage';
+import { t } from '../../../utils/i18n';
+import { Badge } from '../../Badge/Badge';
 import { Icon } from '../../Icon/Icon';
 import { IconButton } from '../../IconButton/IconButton';
 
@@ -22,49 +22,43 @@ export interface DataLinksListItemProps {
 
 export const DataLinksListItem = ({ link, onEdit, onRemove, index, itemKey }: DataLinksListItemProps) => {
   const styles = useStyles2(getDataLinkListItemStyles);
-  const { title = '', url = '' } = link;
+  const { title = '', url = '', oneClick = false } = link;
 
   const hasTitle = title.trim() !== '';
   const hasUrl = url.trim() !== '';
 
-  const isCompactExploreUrl = isCompactUrl(url);
-
   return (
     <Draggable key={itemKey} draggableId={itemKey} index={index}>
       {(provided) => (
-        <>
-          <div
-            className={cx(styles.wrapper, styles.dragRow)}
-            ref={provided.innerRef}
-            {...provided.draggableProps}
-            key={index}
-          >
-            <div className={cx(styles.dragHandle, styles.icons)} {...provided.dragHandleProps}>
-              <Icon name="draggabledots" size="lg" />
+        <div
+          className={cx(styles.wrapper, styles.dragRow)}
+          ref={provided.innerRef}
+          {...provided.draggableProps}
+          key={index}
+        >
+          <div className={styles.linkDetails}>
+            <div className={cx(styles.url, !hasUrl && styles.notConfigured)}>
+              {hasTitle ? title : 'Data link title not provided'}
             </div>
-
-            <div className={styles.linkDetails}>
-              <div className={cx(styles.url, !hasUrl && styles.notConfigured, isCompactExploreUrl && styles.errored)}>
-                {hasTitle ? title : 'Data link title not provided'}
-              </div>
-              <div
-                className={cx(styles.url, !hasUrl && styles.notConfigured, isCompactExploreUrl && styles.errored)}
-                title={url}
-              >
-                {hasUrl ? url : 'Data link url not provided'}
-              </div>
-              {isCompactExploreUrl && (
-                <FieldValidationMessage>
-                  Explore data link may not work in the future. Please edit.
-                </FieldValidationMessage>
-              )}
-            </div>
-            <div>
-              <IconButton name="pen" onClick={onEdit} tooltip="Edit data link title" />
-              <IconButton name="times" onClick={onRemove} tooltip="Remove data link title" />
+            <div className={cx(styles.url, !hasUrl && styles.notConfigured)} title={url}>
+              {hasUrl ? url : 'Data link url not provided'}
             </div>
           </div>
-        </>
+          <div className={styles.icons}>
+            {oneClick && (
+              <Badge
+                color="blue"
+                text={t('grafana-ui.data-links-inline-editor.one-click', 'One click')}
+                tooltip={t('grafana-ui.data-links-inline-editor.one-click-enabled', 'One click enabled')}
+              />
+            )}
+            <IconButton name="pen" onClick={onEdit} className={styles.icon} tooltip="Edit data link" />
+            <IconButton name="trash-alt" onClick={onRemove} className={styles.icon} tooltip="Remove data link" />
+            <div className={styles.dragIcon} {...provided.dragHandleProps}>
+              <Icon name="draggabledots" size="lg" />
+            </div>
+          </div>
+        </div>
       )}
     </Draggable>
   );
@@ -77,21 +71,16 @@ const getDataLinkListItemStyles = (theme: GrafanaTheme2) => {
       flexGrow: 1,
       alignItems: 'center',
       justifyContent: 'space-between',
-      width: '100%',
-      marginBottom: theme.spacing(2),
-      padding: '10px 0 0 10px',
-      '&:last-child': {
-        marginBottom: 0,
-      },
+      padding: '5px 0 5px 10px',
+      borderRadius: theme.shape.radius.default,
+      background: theme.colors.background.secondary,
+      gap: 8,
     }),
     linkDetails: css({
       display: 'flex',
       flexDirection: 'column',
       flexGrow: 1,
-    }),
-    errored: css({
-      color: theme.colors.error.text,
-      fontStyle: 'italic',
+      maxWidth: `calc(100% - 100px)`,
     }),
     notConfigured: css({
       fontStyle: 'italic',
@@ -107,10 +96,10 @@ const getDataLinkListItemStyles = (theme: GrafanaTheme2) => {
       whiteSpace: 'nowrap',
       overflow: 'hidden',
       textOverflow: 'ellipsis',
-      maxWidth: '90%',
     }),
     dragRow: css({
       position: 'relative',
+      margin: '8px',
     }),
     icons: css({
       display: 'flex',
@@ -118,20 +107,13 @@ const getDataLinkListItemStyles = (theme: GrafanaTheme2) => {
       alignItems: 'center',
       gap: 8,
     }),
-    dragHandle: css({
+    dragIcon: css({
       cursor: 'grab',
-      // create focus ring around the whole row when the drag handle is tab-focused
-      // needs position: relative on the drag row to work correctly
-      '&:focus-visible&:after': {
-        bottom: 0,
-        content: '""',
-        left: 0,
-        position: 'absolute',
-        right: 0,
-        top: 0,
-        outline: `2px solid ${theme.colors.primary.main}`,
-        outlineOffset: '-2px',
-      },
+      color: theme.colors.text.secondary,
+      margin: theme.spacing(0, 0.5),
+    }),
+    icon: css({
+      color: theme.colors.text.secondary,
     }),
   };
 };

@@ -1,4 +1,4 @@
-import { setDataSourceSrv } from '@grafana/runtime';
+import { setupDataSources } from 'app/features/alerting/unified/testSetup/datasources';
 
 import { PromAlertingRuleState } from '../../../../types/unified-alerting-dto';
 import {
@@ -9,7 +9,6 @@ import {
   mockCombinedRuleGroup,
   mockCombinedRuleNamespace,
   mockDataSource,
-  MockDataSourceSrv,
   mockPromAlert,
   mockPromAlertingRule,
   mockRulerGrafanaRule,
@@ -25,7 +24,7 @@ const dataSources = {
   loki: mockDataSource({ uid: 'loki-1', name: 'loki' }),
 };
 beforeAll(() => {
-  setDataSourceSrv(new MockDataSourceSrv(dataSources));
+  setupDataSources(...Object.values(dataSources));
 });
 
 describe('filterRules', function () {
@@ -273,9 +272,25 @@ describe('filterRules', function () {
     const ruleQuery = '[alongnameinthefirstgroup][thishas spaces][somethingelse]';
     const namespaceQuery = 'foo|bar';
     const groupQuery = 'some|group';
+    const freeForm = '.+';
 
-    const performFilter = () =>
-      filterRules([ns], getFilter({ groupName: groupQuery, ruleName: ruleQuery, namespace: namespaceQuery }));
-    expect(performFilter).not.toThrow();
+    expect(() =>
+      filterRules(
+        [ns],
+        getFilter({ groupName: groupQuery, ruleName: ruleQuery, namespace: namespaceQuery, freeFormWords: [freeForm] })
+      )
+    ).not.toThrow();
+  });
+
+  // these test may same to be the same as the one above but it tests different edge-cases
+  it('does not crash with other regex values', () => {
+    const rules = [mockCombinedRule({ name: 'rule' })];
+
+    const ns = mockCombinedRuleNamespace({
+      name: 'namespace',
+      groups: [mockCombinedRuleGroup('group', rules)],
+    });
+
+    expect(() => filterRules([ns], getFilter({ freeFormWords: ['.+'] }))).not.toThrow();
   });
 });

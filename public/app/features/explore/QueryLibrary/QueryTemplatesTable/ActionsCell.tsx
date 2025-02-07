@@ -1,6 +1,7 @@
-import { reportInteraction, getAppEvents } from '@grafana/runtime';
-import { DataQuery } from '@grafana/schema';
-import { IconButton } from '@grafana/ui';
+import { useState } from 'react';
+
+import { getAppEvents } from '@grafana/runtime';
+import { IconButton, Modal } from '@grafana/ui';
 import { notifyApp } from 'app/core/actions';
 import { createSuccessNotification } from 'app/core/copy/appNotification';
 import { t } from 'app/core/internationalization';
@@ -8,27 +9,37 @@ import { useDeleteQueryTemplateMutation } from 'app/features/query-library';
 import { dispatch } from 'app/store/store';
 import { ShowConfirmModalEvent } from 'app/types/events';
 
-import ExploreRunQueryButton from '../../ExploreRunQueryButton';
-import { useQueriesDrawerContext } from '../../QueriesDrawer/QueriesDrawerContext';
+import {
+  queryLibaryTrackDeleteQuery,
+  queryLibraryTrackAddOrEditDescription,
+  queryLibraryTrackRunQuery,
+} from '../QueryLibraryAnalyticsEvents';
+import { QueryTemplateForm } from '../QueryTemplateForm';
+import { QueryActionButton } from '../types';
 
 import { useQueryLibraryListStyles } from './styles';
+import { QueryTemplateRow } from './types';
 
 interface ActionsCellProps {
   queryUid?: string;
-  query?: DataQuery;
+  queryTemplate: QueryTemplateRow;
   rootDatasourceUid?: string;
+  QueryActionButton?: QueryActionButton;
 }
 
-function ActionsCell({ query, rootDatasourceUid, queryUid }: ActionsCellProps) {
+function ActionsCell({ queryTemplate, rootDatasourceUid, queryUid, QueryActionButton }: ActionsCellProps) {
   const [deleteQueryTemplate] = useDeleteQueryTemplateMutation();
-  const { setDrawerOpened } = useQueriesDrawerContext();
+  const [editFormOpen, setEditFormOpen] = useState(false);
   const styles = useQueryLibraryListStyles();
 
   const onDeleteQuery = (queryUid: string) => {
     const performDelete = (queryUid: string) => {
-      deleteQueryTemplate({ uid: queryUid });
+      deleteQueryTemplate({
+        name: queryUid,
+        deleteOptions: {},
+      });
       dispatch(notifyApp(createSuccessNotification(t('explore.query-library.query-deleted', 'Query deleted'))));
-      reportInteraction('grafana_explore_query_library_deleted');
+      queryLibaryTrackDeleteQuery();
     };
 
     getAppEvents().publish(
@@ -59,11 +70,39 @@ function ActionsCell({ query, rootDatasourceUid, queryUid }: ActionsCellProps) {
           }
         }}
       />
-      <ExploreRunQueryButton
-        queries={query ? [query] : []}
-        rootDatasourceUid={rootDatasourceUid}
-        onClick={() => setDrawerOpened(false)}
+      <IconButton
+        className={styles.actionButton}
+        size="lg"
+        name="comment-alt"
+        title={t('explore.query-library.add-edit-description', 'Add/edit description')}
+        tooltip={t('explore.query-library.add-edit-description', 'Add/edit description')}
+        onClick={() => {
+          setEditFormOpen(true);
+          queryLibraryTrackAddOrEditDescription();
+        }}
       />
+      {QueryActionButton && (
+        <QueryActionButton
+          queries={queryTemplate.query ? [queryTemplate.query] : []}
+          datasourceUid={rootDatasourceUid}
+          onClick={() => {
+            queryLibraryTrackRunQuery(queryTemplate.datasourceType || '');
+          }}
+        />
+      )}
+      <Modal
+        title={t('explore.query-template-modal.edit-title', 'Edit query')}
+        isOpen={editFormOpen}
+        onDismiss={() => setEditFormOpen(false)}
+      >
+        <QueryTemplateForm
+          onCancel={() => setEditFormOpen(false)}
+          templateData={queryTemplate}
+          onSave={() => {
+            setEditFormOpen(false);
+          }}
+        />
+      </Modal>
     </div>
   );
 }

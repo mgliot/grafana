@@ -185,6 +185,9 @@ func (service *AlertRuleService) CreateAlertRule(ctx context.Context, user ident
 		return models.AlertRule{}, errors.Join(models.ErrAlertRuleFailedValidation, fmt.Errorf("cannot create rule with UID '%s': %w", rule.UID, err))
 	}
 	var interval = service.defaultIntervalSeconds
+	if err := service.ensureNamespace(ctx, user, rule.OrgID, rule.NamespaceUID); err != nil {
+		return models.AlertRule{}, err
+	}
 	// check if user can bypass fine-grained rule authorization checks. If it cannot, verfiy that the user can add rules to the group
 	canWriteAllRules, err := service.authz.CanWriteAllRules(ctx, user)
 	if err != nil {
@@ -216,9 +219,6 @@ func (service *AlertRuleService) CreateAlertRule(ctx context.Context, user ident
 	if err != nil {
 		return models.AlertRule{}, err
 	}
-	if err = service.ensureRuleNamespace(ctx, user, rule); err != nil {
-		return models.AlertRule{}, err
-	}
 	rule.Updated = time.Now()
 	if len(rule.NotificationSettings) > 0 {
 		validator, err := service.nsValidatorProvider.Validator(ctx, rule.OrgID)
@@ -232,7 +232,7 @@ func (service *AlertRuleService) CreateAlertRule(ctx context.Context, user ident
 		}
 	}
 	err = service.xact.InTransaction(ctx, func(ctx context.Context) error {
-		ids, err := service.ruleStore.InsertAlertRules(ctx, []models.AlertRule{
+		ids, err := service.ruleStore.InsertAlertRules(ctx, userUidOrFallback(user), []models.AlertRule{
 			rule,
 		})
 		if err != nil {
@@ -359,7 +359,7 @@ func (service *AlertRuleService) UpdateRuleGroup(ctx context.Context, user ident
 			}
 		}
 
-		return service.ruleStore.UpdateAlertRules(ctx, updateRules)
+		return service.ruleStore.UpdateAlertRules(ctx, userUidOrFallback(user), updateRules)
 	})
 }
 
@@ -511,7 +511,7 @@ func (service *AlertRuleService) persistDelta(ctx context.Context, user identity
 					New:      *update.New,
 				})
 			}
-			if err := service.ruleStore.UpdateAlertRules(ctx, updates); err != nil {
+			if err := service.ruleStore.UpdateAlertRules(ctx, userUidOrFallback(user), updates); err != nil {
 				return fmt.Errorf("failed to update alert rules: %w", err)
 			}
 			for _, update := range delta.Update {
@@ -522,7 +522,7 @@ func (service *AlertRuleService) persistDelta(ctx context.Context, user identity
 		}
 
 		if len(delta.New) > 0 {
-			uids, err := service.ruleStore.InsertAlertRules(ctx, withoutNilAlertRules(delta.New))
+			uids, err := service.ruleStore.InsertAlertRules(ctx, userUidOrFallback(user), withoutNilAlertRules(delta.New))
 			if err != nil {
 				return fmt.Errorf("failed to insert alert rules: %w", err)
 			}
@@ -544,6 +544,9 @@ func (service *AlertRuleService) persistDelta(ctx context.Context, user identity
 // UpdateAlertRule updates an alert rule.
 func (service *AlertRuleService) UpdateAlertRule(ctx context.Context, user identity.Requester, rule models.AlertRule, provenance models.Provenance) (models.AlertRule, error) {
 	var storedRule *models.AlertRule
+	if err := service.ensureNamespace(ctx, user, rule.OrgID, rule.NamespaceUID); err != nil {
+		return models.AlertRule{}, err
+	}
 	// check if the user has full access to all rules and can bypass the regular authorization validations.
 	// If it cannot, calculate the changes to the group caused by this update and authorize them.
 	canWriteAllRules, err := service.authz.CanWriteAllRules(ctx, user)
@@ -567,6 +570,10 @@ func (service *AlertRuleService) UpdateAlertRule(ctx context.Context, user ident
 		}
 		if err = service.authz.AuthorizeRuleGroupWrite(ctx, user, delta); err != nil {
 			return models.AlertRule{}, err
+		}
+		if delta.IsEmpty() {
+			// No changes to the rule.
+			return rule, nil
 		}
 		for _, d := range delta.Update {
 			if d.Existing.GetKey() == rule.GetKey() {
@@ -598,12 +605,20 @@ func (service *AlertRuleService) UpdateAlertRule(ctx context.Context, user ident
 	rule.Updated = time.Now()
 	rule.ID = storedRule.ID
 	rule.IntervalSeconds = storedRule.IntervalSeconds
+
+	// Currently metadata contains only editor settings, so we can just copy it.
+	// If we add more fields to metadata, we might need to handle them separately,
+	// and/or merge or update their values.
+	if rule.Metadata == (models.AlertRuleMetadata{}) {
+		rule.Metadata = storedRule.Metadata
+	}
+
 	err = rule.SetDashboardAndPanelFromAnnotations()
 	if err != nil {
 		return models.AlertRule{}, err
 	}
 	err = service.xact.InTransaction(ctx, func(ctx context.Context) error {
-		err := service.ruleStore.UpdateAlertRules(ctx, []models.UpdateRule{
+		err := service.ruleStore.UpdateAlertRules(ctx, userUidOrFallback(user), []models.UpdateRule{
 			{
 				Existing: storedRule,
 				New:      rule,
@@ -659,12 +674,10 @@ func (service *AlertRuleService) DeleteAlertRule(ctx context.Context, user ident
 // checkLimitsTransactionCtx checks whether the current transaction (as identified by the ctx) breaches configured alert rule limits.
 func (service *AlertRuleService) checkLimitsTransactionCtx(ctx context.Context, user identity.Requester) error {
 	// default to 0 if there is no user
-	userID := int64(0)
-	u, err := identity.UserIdentifier(user.GetTypedID())
-	if err != nil {
-		return fmt.Errorf("failed to check alert rule quota: %w", err)
+	var userID int64
+	if id, err := identity.UserIdentifier(user.GetID()); err == nil {
+		userID = id
 	}
-	userID = u
 
 	limitReached, err := service.quotas.CheckQuotaReached(ctx, models.QuotaTargetSrv, &quota.ScopeParameters{
 		OrgID:  user.GetOrgID(),
@@ -830,10 +843,10 @@ func (service *AlertRuleService) checkGroupLimits(group models.AlertRuleGroup) e
 	return nil
 }
 
-// ensureRuleNamespace ensures that the rule has a valid namespace UID.
+// ensureNamespace ensures that the rule has a valid namespace UID.
 // If the rule does not have a namespace UID or the namespace (folder) does not exist it will return an error.
-func (service *AlertRuleService) ensureRuleNamespace(ctx context.Context, user identity.Requester, rule models.AlertRule) error {
-	if rule.NamespaceUID == "" {
+func (service *AlertRuleService) ensureNamespace(ctx context.Context, user identity.Requester, orgID int64, namespaceUID string) error {
+	if namespaceUID == "" {
 		return fmt.Errorf("%w: folderUID must be set", models.ErrAlertRuleFailedValidation)
 	}
 
@@ -845,8 +858,8 @@ func (service *AlertRuleService) ensureRuleNamespace(ctx context.Context, user i
 
 	// ensure the namespace exists
 	_, err := service.folderService.Get(ctx, &folder.GetFolderQuery{
-		OrgID:        rule.OrgID,
-		UID:          &rule.NamespaceUID,
+		OrgID:        orgID,
+		UID:          &namespaceUID,
 		SignedInUser: user,
 	})
 	if err != nil {
@@ -857,4 +870,12 @@ func (service *AlertRuleService) ensureRuleNamespace(ctx context.Context, user i
 	}
 
 	return nil
+}
+
+func userUidOrFallback(user identity.Requester) *models.UserUID {
+	userUID := models.NewUserUID(user)
+	if user == nil {
+		return &models.FileProvisioningUserUID
+	}
+	return userUID
 }

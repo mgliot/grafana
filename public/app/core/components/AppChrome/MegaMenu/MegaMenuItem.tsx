@@ -1,7 +1,7 @@
 import { css, cx } from '@emotion/css';
 import { useEffect, useRef } from 'react';
 import * as React from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router-dom-v5-compat';
 import { useLocalStorage } from 'react-use';
 
 import { GrafanaTheme2, NavModelItem, toIconName } from '@grafana/data';
@@ -74,6 +74,10 @@ export function MegaMenuItem({ link, activeItem, level = 0, onClick, onPin, isPi
     );
   }
 
+  function getIconName(isExpanded: boolean) {
+    return isExpanded ? 'angle-up' : 'angle-down';
+  }
+
   return (
     <li ref={item} className={styles.listItem}>
       <div
@@ -83,18 +87,6 @@ export function MegaMenuItem({ link, activeItem, level = 0, onClick, onPin, isPi
       >
         {level !== 0 && <Indent level={level === MAX_DEPTH ? level - 1 : level} spacing={3} />}
         {level === MAX_DEPTH && <div className={styles.itemConnector} />}
-        <div className={styles.collapseButtonWrapper}>
-          {showExpandButton && (
-            <IconButton
-              aria-label={`${sectionExpanded ? 'Collapse' : 'Expand'} section ${link.text}`}
-              className={styles.collapseButton}
-              onClick={() => setSectionExpanded(!sectionExpanded)}
-              name={sectionExpanded ? 'angle-down' : 'angle-right'}
-              size="md"
-              variant="secondary"
-            />
-          )}
-        </div>
         <div className={styles.collapsibleSectionWrapper}>
           <MegaMenuItemText
             isActive={isActive}
@@ -104,9 +96,8 @@ export function MegaMenuItem({ link, activeItem, level = 0, onClick, onPin, isPi
             }}
             target={link.target}
             url={link.url}
-            id={link.id}
             onPin={() => onPin(link)}
-            isPinned={isPinned(link.id)}
+            isPinned={isPinned(link.url)}
           >
             <div
               className={cx(styles.labelWrapper, {
@@ -118,6 +109,18 @@ export function MegaMenuItem({ link, activeItem, level = 0, onClick, onPin, isPi
               <Text truncate>{link.text}</Text>
             </div>
           </MegaMenuItemText>
+        </div>
+        <div className={styles.collapseButtonWrapper}>
+          {showExpandButton && (
+            <IconButton
+              aria-label={`${sectionExpanded ? 'Collapse' : 'Expand'} section ${link.text}`}
+              className={styles.collapseButton}
+              onClick={() => setSectionExpanded(!sectionExpanded)}
+              name={getIconName(Boolean(sectionExpanded))}
+              size="md"
+              variant="secondary"
+            />
+          )}
         </div>
       </div>
       {showExpandButton && sectionExpanded && (

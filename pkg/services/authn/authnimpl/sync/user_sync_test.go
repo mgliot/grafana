@@ -7,9 +7,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/grafana/grafana/pkg/apimachinery/identity"
+	claims "github.com/grafana/authlib/types"
+
 	"github.com/grafana/grafana/pkg/infra/tracing"
 	"github.com/grafana/grafana/pkg/services/authn"
+	"github.com/grafana/grafana/pkg/services/featuremgmt"
 	"github.com/grafana/grafana/pkg/services/login"
 	"github.com/grafana/grafana/pkg/services/login/authinfoimpl"
 	"github.com/grafana/grafana/pkg/services/login/authinfotest"
@@ -45,7 +47,9 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 			AuthModule: "oauth",
 			AuthId:     "2032",
 			UserId:     1,
-			Id:         1}}
+			Id:         1,
+		},
+	}
 
 	userService := &usertest.FakeUserService{ExpectedUser: &user.User{
 		ID:    1,
@@ -164,8 +168,9 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 			},
 			wantErr: false,
 			wantID: &authn.Identity{
-				ID:             identity.MustParseTypedID("user:1"),
-				UID:            identity.MustParseTypedID("user:1"),
+				ID:             "1",
+				UID:            "1",
+				Type:           claims.TypeUser,
 				Login:          "test",
 				Name:           "test",
 				Email:          "test",
@@ -203,8 +208,9 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 			},
 			wantErr: false,
 			wantID: &authn.Identity{
-				ID:             identity.MustParseTypedID("user:1"),
-				UID:            identity.MustParseTypedID("user:1"),
+				ID:             "1",
+				UID:            "1",
+				Type:           claims.TypeUser,
 				Login:          "test",
 				Name:           "test",
 				Email:          "test",
@@ -244,8 +250,9 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 			},
 			wantErr: false,
 			wantID: &authn.Identity{
-				ID:              identity.MustParseTypedID("user:1"),
-				UID:             identity.MustParseTypedID("user:1"),
+				ID:              "1",
+				UID:             "1",
+				Type:            claims.TypeUser,
 				AuthID:          "2032",
 				AuthenticatedBy: "oauth",
 				Login:           "test",
@@ -316,8 +323,9 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 			},
 			wantErr: false,
 			wantID: &authn.Identity{
-				ID:              identity.MustParseTypedID("user:2"),
-				UID:             identity.MustParseTypedID("user:2"),
+				ID:              "2",
+				UID:             "2",
+				Type:            claims.TypeUser,
 				Login:           "test_create",
 				Name:            "test_create",
 				Email:           "test_create",
@@ -362,8 +370,9 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 			},
 			wantErr: false,
 			wantID: &authn.Identity{
-				ID:             identity.MustParseTypedID("user:3"),
-				UID:            identity.MustParseTypedID("user:3"),
+				ID:             "3",
+				UID:            "3",
+				Type:           claims.TypeUser,
 				Login:          "test_mod",
 				Name:           "test_mod",
 				Email:          "test_mod",
@@ -407,8 +416,9 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 			},
 			wantErr: false,
 			wantID: &authn.Identity{
-				ID:             identity.MustParseTypedID("user:3"),
-				UID:            identity.MustParseTypedID("user:3"),
+				ID:             "3",
+				UID:            "3",
+				Type:           claims.TypeUser,
 				Name:           "test",
 				Login:          "test",
 				Email:          "test_mod@test.com",
@@ -428,7 +438,7 @@ func TestUserSync_SyncUserHook(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := ProvideUserSync(tt.fields.userService, userProtection, tt.fields.authInfoService, tt.fields.quotaService, tracing.InitializeTracerForTest())
+			s := ProvideUserSync(tt.fields.userService, userProtection, tt.fields.authInfoService, tt.fields.quotaService, tracing.InitializeTracerForTest(), featuremgmt.WithFeatures())
 			err := s.SyncUserHook(tt.args.ctx, tt.args.id, nil)
 			if tt.wantErr {
 				require.Error(t, err)
@@ -458,7 +468,7 @@ func TestUserSync_FetchSyncedUserHook(t *testing.T) {
 		{
 			desc:     "should skip hook when identity is not a user",
 			req:      &authn.Request{},
-			identity: &authn.Identity{ID: identity.MustParseTypedID("api-key:1"), ClientParams: authn.ClientParams{FetchSyncedUser: true}},
+			identity: &authn.Identity{ID: "1", Type: claims.TypeAPIKey, ClientParams: authn.ClientParams{FetchSyncedUser: true}},
 		},
 	}
 
@@ -484,7 +494,8 @@ func TestUserSync_EnableDisabledUserHook(t *testing.T) {
 		{
 			desc: "should skip if correct flag is not set",
 			identity: &authn.Identity{
-				ID:           identity.NewTypedID(identity.TypeUser, 1),
+				ID:           "1",
+				Type:         claims.TypeUser,
 				IsDisabled:   true,
 				ClientParams: authn.ClientParams{EnableUser: false},
 			},
@@ -493,7 +504,8 @@ func TestUserSync_EnableDisabledUserHook(t *testing.T) {
 		{
 			desc: "should skip if identity is not a user",
 			identity: &authn.Identity{
-				ID:           identity.NewTypedID(identity.TypeAPIKey, 1),
+				ID:           "1",
+				Type:         claims.TypeAPIKey,
 				IsDisabled:   true,
 				ClientParams: authn.ClientParams{EnableUser: true},
 			},
@@ -502,7 +514,8 @@ func TestUserSync_EnableDisabledUserHook(t *testing.T) {
 		{
 			desc: "should enabled disabled user",
 			identity: &authn.Identity{
-				ID:           identity.NewTypedID(identity.TypeUser, 1),
+				ID:           "1",
+				Type:         claims.TypeUser,
 				IsDisabled:   true,
 				ClientParams: authn.ClientParams{EnableUser: true},
 			},

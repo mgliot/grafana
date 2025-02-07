@@ -14,41 +14,14 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apiserver/pkg/storage"
+
+	"github.com/grafana/grafana/pkg/apimachinery/utils"
 
 	grafanaregistry "github.com/grafana/grafana/pkg/apiserver/registry/generic"
 	"github.com/grafana/grafana/pkg/storage/unified/resource"
 )
-
-func errorWrap(status *resource.ErrorResult) error {
-	if status != nil {
-		err := &apierrors.StatusError{ErrStatus: metav1.Status{
-			Status:  metav1.StatusFailure,
-			Code:    status.Code,
-			Reason:  metav1.StatusReason(status.Reason),
-			Message: status.Message,
-		}}
-		if status.Details != nil {
-			err.ErrStatus.Details = &metav1.StatusDetails{
-				Group:             status.Details.Group,
-				Kind:              status.Details.Kind,
-				Name:              status.Details.Name,
-				UID:               types.UID(status.Details.Uid),
-				RetryAfterSeconds: status.Details.RetryAfterSeconds,
-			}
-			for _, c := range status.Details.Causes {
-				err.ErrStatus.Details.Causes = append(err.ErrStatus.Details.Causes, metav1.StatusCause{
-					Type:    metav1.CauseType(c.Reason),
-					Message: c.Message,
-					Field:   c.Field,
-				})
-			}
-		}
-		return err
-	}
-	return nil
-}
 
 func toListRequest(k *resource.ResourceKey, opts storage.ListOptions) (*resource.ListRequest, storage.SelectionPredicate, error) {
 	predicate := opts.Predicate
@@ -68,6 +41,38 @@ func toListRequest(k *resource.ResourceKey, opts storage.ListOptions) (*resource
 
 		for _, r := range requirements {
 			v := r.Key()
+
+			// Parse the history request from labels
+			if v == utils.LabelKeyGetHistory || v == utils.LabelKeyGetTrash {
+				if len(requirements) != 1 {
+					return nil, predicate, apierrors.NewBadRequest("single label supported with: " + v)
+				}
+				if !opts.Predicate.Field.Empty() {
+					return nil, predicate, apierrors.NewBadRequest("field selector not supported with: " + v)
+				}
+				if r.Operator() != selection.Equals {
+					return nil, predicate, apierrors.NewBadRequest("only = operator supported with: " + v)
+				}
+
+				vals := r.Values().List()
+				if len(vals) != 1 {
+					return nil, predicate, apierrors.NewBadRequest("expecting single value for: " + v)
+				}
+
+				if v == utils.LabelKeyGetTrash {
+					req.Source = resource.ListRequest_TRASH
+					if vals[0] != "true" {
+						return nil, predicate, apierrors.NewBadRequest("expecting true for: " + v)
+					}
+				} else {
+					req.Source = resource.ListRequest_HISTORY
+					req.Options.Key.Name = vals[0]
+				}
+
+				req.Options.Labels = nil
+				req.Options.Fields = nil
+				return req, storage.Everything, nil
+			}
 
 			req.Options.Labels = append(req.Options.Labels, &resource.Requirement{
 				Key:      v,

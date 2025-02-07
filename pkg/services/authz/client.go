@@ -2,70 +2,87 @@ package authz
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"github.com/fullstorydev/grpchan"
 	"github.com/fullstorydev/grpchan/inprocgrpc"
-	authzv1 "github.com/grafana/authlib/authz/proto/v1"
 	grpcAuth "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/auth"
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	authnlib "github.com/grafana/authlib/authn"
+	authzlib "github.com/grafana/authlib/authz"
+	authzv1 "github.com/grafana/authlib/authz/proto/v1"
+	"github.com/grafana/authlib/cache"
+	authlib "github.com/grafana/authlib/types"
+	"github.com/grafana/grafana/pkg/infra/db"
+	"github.com/grafana/grafana/pkg/infra/log"
 	"github.com/grafana/grafana/pkg/infra/tracing"
+	"github.com/grafana/grafana/pkg/registry/apis/iam/legacy"
 	"github.com/grafana/grafana/pkg/services/accesscontrol"
+	"github.com/grafana/grafana/pkg/services/authz/rbac"
+	"github.com/grafana/grafana/pkg/services/authz/rbac/store"
 	"github.com/grafana/grafana/pkg/services/featuremgmt"
 	"github.com/grafana/grafana/pkg/services/grpcserver"
 	"github.com/grafana/grafana/pkg/setting"
-	grpcUtils "github.com/grafana/grafana/pkg/storage/unified/resource/grpc"
+	"github.com/grafana/grafana/pkg/storage/legacysql"
 )
 
-type Client interface {
-	// TODO
-}
-
-type LegacyClient struct {
-	clientV1 authzv1.AuthzServiceClient
-}
+// `authzService` is hardcoded in authz-service
+const authzServiceAudience = "authzService"
 
 // ProvideAuthZClient provides an AuthZ client and creates the AuthZ service.
 func ProvideAuthZClient(
-	cfg *setting.Cfg, features featuremgmt.FeatureToggles, acSvc accesscontrol.Service,
-	grpcServer grpcserver.Provider, tracer tracing.Tracer,
-) (Client, error) {
-	if !features.IsEnabledGlobally(featuremgmt.FlagAuthZGRPCServer) {
-		return nil, nil
-	}
-
+	cfg *setting.Cfg,
+	features featuremgmt.FeatureToggles,
+	grpcServer grpcserver.Provider,
+	tracer tracing.Tracer,
+	reg prometheus.Registerer,
+	db db.DB,
+	acService accesscontrol.Service,
+) (authlib.AccessClient, error) {
 	authCfg, err := ReadCfg(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	var client *LegacyClient
-
-	// Register the server
-	server, err := newLegacyServer(acSvc, features, grpcServer, tracer, authCfg)
-	if err != nil {
-		return nil, err
+	isRemoteServer := authCfg.mode == ModeCloud || authCfg.mode == ModeGRPC
+	if !features.IsEnabledGlobally(featuremgmt.FlagAuthZGRPCServer) && isRemoteServer {
+		return nil, errors.New("authZGRPCServer feature toggle is required for cloud and grpc mode")
 	}
 
 	switch authCfg.mode {
-	case ModeInProc:
-		client = newInProcLegacyClient(server)
 	case ModeGRPC:
-		client, err = newGrpcLegacyClient(authCfg.remoteAddress)
-		if err != nil {
-			return nil, err
-		}
-	}
+		return newGrpcLegacyClient(authCfg, tracer)
+	case ModeCloud:
+		return newCloudLegacyClient(authCfg, tracer)
+	default:
+		sql := legacysql.NewDatabaseProvider(db)
 
-	return client, err
+		// Register the server
+		server := rbac.NewService(
+			sql,
+			legacy.NewLegacySQLStores(sql),
+			store.NewUnionPermissionStore(
+				store.NewStaticPermissionStore(acService),
+				store.NewSQLPermissionStore(sql, tracer),
+			),
+			log.New("authz-grpc-server"),
+			tracer,
+			reg,
+			cache.NewLocalCache(cache.Config{Expiry: 5 * time.Minute, CleanupInterval: 10 * time.Minute}),
+		)
+		return newInProcLegacyClient(server, tracer)
+	}
 }
 
 // ProvideStandaloneAuthZClient provides a standalone AuthZ client, without registering the AuthZ service.
 // You need to provide a remote address in the configuration
 func ProvideStandaloneAuthZClient(
 	cfg *setting.Cfg, features featuremgmt.FeatureToggles, tracer tracing.Tracer,
-) (Client, error) {
+) (authlib.AccessClient, error) {
 	if !features.IsEnabledGlobally(featuremgmt.FlagAuthZGRPCServer) {
 		return nil, nil
 	}
@@ -75,50 +92,112 @@ func ProvideStandaloneAuthZClient(
 		return nil, err
 	}
 
-	return newGrpcLegacyClient(authCfg.remoteAddress)
+	if authCfg.mode == ModeGRPC {
+		return newGrpcLegacyClient(authCfg, tracer)
+	}
+	return newCloudLegacyClient(authCfg, tracer)
 }
 
-func newInProcLegacyClient(server *legacyServer) *LegacyClient {
-	channel := &inprocgrpc.Channel{}
-
-	// TODO (gamab): change this once it's clear how to authenticate the client
-	// Choices are:
-	// - noAuth given it's in proc and we don't need the user
-	// - access_token verif only as it's consistent with when it's remote (we check the service is allowed to call the authz service)
-	// - access_token and id_token ? the id_token being only necessary when the user is trying to access the service straight away
-	// auth := grpcUtils.ProvideAuthenticator(cfg)
-	noAuth := func(ctx context.Context) (context.Context, error) {
+func newInProcLegacyClient(server *rbac.Service, tracer tracing.Tracer) (authlib.AccessClient, error) {
+	// For in-proc use-case authorize add fake service claims - it should be able to access every namespace, as there is only one
+	staticAuth := func(ctx context.Context) (context.Context, error) {
+		ctx = authlib.WithAuthInfo(ctx, authnlib.NewAccessTokenAuthInfo(authnlib.Claims[authnlib.AccessTokenClaims]{
+			Rest: authnlib.AccessTokenClaims{
+				Namespace: "*",
+			},
+		}))
 		return ctx, nil
 	}
 
+	channel := &inprocgrpc.Channel{}
 	channel.RegisterService(
 		grpchan.InterceptServer(
 			&authzv1.AuthzService_ServiceDesc,
-			grpcAuth.UnaryServerInterceptor(noAuth),
-			grpcAuth.StreamServerInterceptor(noAuth),
+			grpcAuth.UnaryServerInterceptor(staticAuth),
+			grpcAuth.StreamServerInterceptor(staticAuth),
 		),
 		server,
 	)
 
-	conn := grpchan.InterceptClientConn(channel, grpcUtils.UnaryClientInterceptor, grpcUtils.StreamClientInterceptor)
-
-	client := authzv1.NewAuthzServiceClient(conn)
-
-	return &LegacyClient{
-		clientV1: client,
-	}
+	return authzlib.NewClient(
+		&authzlib.ClientConfig{},
+		authzlib.WithGrpcConnectionClientOption(channel),
+		authzlib.WithDisableAccessTokenClientOption(),
+		authzlib.WithTracerClientOption(tracer),
+		authzlib.WithCacheClientOption(cache.NewLocalCache(cache.Config{
+			Expiry:          30 * time.Second,
+			CleanupInterval: 2 * time.Minute,
+		})),
+	)
 }
 
-func newGrpcLegacyClient(address string) (*LegacyClient, error) {
-	// Create a connection to the gRPC server
-	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+func newGrpcLegacyClient(authCfg *Cfg, tracer tracing.Tracer) (authlib.AccessClient, error) {
+	// This client interceptor is a noop, as we don't send an access token
+	clientConfig := authnlib.GrpcClientConfig{}
+	clientInterceptor, err := authnlib.NewGrpcClientInterceptor(
+		&clientConfig,
+		authnlib.WithDisableAccessTokenOption(),
+		authnlib.WithTracerOption(tracer),
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	client := authzv1.NewAuthzServiceClient(conn)
+	cfg := authzlib.ClientConfig{RemoteAddress: authCfg.remoteAddress}
+	client, err := authzlib.NewClient(&cfg,
+		authzlib.WithGrpcDialOptionsClientOption(
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithUnaryInterceptor(clientInterceptor.UnaryClientInterceptor),
+			grpc.WithStreamInterceptor(clientInterceptor.StreamClientInterceptor),
+		),
+		authzlib.WithTracerClientOption(tracer),
+		authzlib.WithCacheClientOption(cache.NewLocalCache(cache.Config{
+			Expiry:          30 * time.Second,
+			CleanupInterval: 2 * time.Minute,
+		})),
+		// TODO: remove this once access tokens are supported on-prem
+		authzlib.WithDisableAccessTokenClientOption(),
+	)
+	if err != nil {
+		return nil, err
+	}
 
-	return &LegacyClient{
-		clientV1: client,
-	}, nil
+	return client, nil
+}
+
+func newCloudLegacyClient(authCfg *Cfg, tracer tracing.Tracer) (authlib.AccessClient, error) {
+	grpcClientConfig := authnlib.GrpcClientConfig{
+		TokenClientConfig: &authnlib.TokenExchangeConfig{
+			Token:            authCfg.token,
+			TokenExchangeURL: authCfg.tokenExchangeURL,
+		},
+		TokenRequest: &authnlib.TokenExchangeRequest{
+			Namespace: authCfg.tokenNamespace,
+			Audiences: []string{authzServiceAudience},
+		},
+	}
+
+	clientInterceptor, err := authnlib.NewGrpcClientInterceptor(&grpcClientConfig, authnlib.WithTracerOption(tracer))
+	if err != nil {
+		return nil, err
+	}
+
+	clientCfg := authzlib.ClientConfig{RemoteAddress: authCfg.remoteAddress}
+	client, err := authzlib.NewClient(&clientCfg,
+		authzlib.WithGrpcDialOptionsClientOption(
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithUnaryInterceptor(clientInterceptor.UnaryClientInterceptor),
+			grpc.WithStreamInterceptor(clientInterceptor.StreamClientInterceptor),
+		),
+		authzlib.WithCacheClientOption(cache.NewLocalCache(cache.Config{
+			Expiry:          30 * time.Second,
+			CleanupInterval: 2 * time.Minute,
+		})),
+		authzlib.WithTracerClientOption(tracer),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return client, nil
 }

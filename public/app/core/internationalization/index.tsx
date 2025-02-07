@@ -1,5 +1,6 @@
 import i18n, { InitOptions, TFunction } from 'i18next';
 import LanguageDetector, { DetectorOptions } from 'i18next-browser-languagedetector';
+import { ReactElement } from 'react';
 import { Trans as I18NextTrans, initReactI18next } from 'react-i18next'; // eslint-disable-line no-restricted-imports
 
 import { DEFAULT_LANGUAGE, NAMESPACES, VALID_LANGUAGES } from './constants';
@@ -56,11 +57,25 @@ export function changeLanguage(locale: string) {
   return i18n.changeLanguage(validLocale);
 }
 
-export const Trans: typeof I18NextTrans = (props) => {
+type I18NextTransType = typeof I18NextTrans;
+type I18NextTransProps = Parameters<I18NextTransType>[0];
+
+interface TransProps extends I18NextTransProps {
+  i18nKey: string;
+}
+
+export const Trans = (props: TransProps): ReactElement => {
   return <I18NextTrans shouldUnescape ns={NAMESPACES} {...props} />;
 };
 
-// Wrap t() to provide default namespaces and enforce a consistent API
+/**
+ * This is a simple wrapper over i18n.t() to provide default namespaces and enforce a consistent API.
+ * Note: Don't use this in the top level module scope. This wrapper needs initialization, which is done during Grafana
+ * startup, and it will throw if used before.
+ * @param id ID of the translation string
+ * @param defaultMessage Default message to use if the translation is missing
+ * @param values Values to be interpolated into the string
+ */
 export const t = (id: string, defaultMessage: string, values?: Record<string, unknown>) => {
   if (!tFunc) {
     if (process.env.NODE_ENV !== 'test') {

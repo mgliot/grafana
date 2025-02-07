@@ -47,6 +47,11 @@ var (
 	ErrNoPanel = errors.New("no panel")
 )
 
+var (
+	FileProvisioningUserUID = UserUID("__provisioning__")
+	AlertingUserUID         = UserUID("__alerting__")
+)
+
 // swagger:enum NoDataState
 type NoDataState string
 
@@ -108,8 +113,8 @@ const (
 type RuleType string
 
 const (
-	RuleTypeAlerting  = "alerting"
-	RuleTypeRecording = "recording"
+	RuleTypeAlerting  RuleType = "alerting"
+	RuleTypeRecording RuleType = "recording"
 )
 
 func (r RuleType) String() string {
@@ -243,23 +248,39 @@ func SortAlertRuleGroupWithFolderTitle(g []AlertRuleGroupWithFolderFullpath) {
 	})
 }
 
+type UserUID string
+
+func NewUserUID(requester interface{ GetIdentifier() string }) *UserUID {
+	// use anonymous interface to abstract from identity package, which is part of apimachinery
+	if requester == nil {
+		return nil
+	}
+	identifier := requester.GetIdentifier()
+	if identifier == "" {
+		return nil
+	}
+	userUID := UserUID(identifier)
+	return &userUID
+}
+
 // AlertRule is the model for alert rules in unified alerting.
 type AlertRule struct {
-	ID              int64 `xorm:"pk autoincr 'id'"`
-	OrgID           int64 `xorm:"org_id"`
+	ID              int64
+	OrgID           int64
 	Title           string
 	Condition       string
 	Data            []AlertQuery
 	Updated         time.Time
+	UpdatedBy       *UserUID
 	IntervalSeconds int64
-	Version         int64   `xorm:"version"` // this tag makes xorm add optimistic lock (see https://xorm.io/docs/chapter-06/1.lock/)
-	UID             string  `xorm:"uid"`
-	NamespaceUID    string  `xorm:"namespace_uid"`
-	DashboardUID    *string `xorm:"dashboard_uid"`
-	PanelID         *int64  `xorm:"panel_id"`
+	Version         int64
+	UID             string
+	NamespaceUID    string
+	DashboardUID    *string
+	PanelID         *int64
 	RuleGroup       string
-	RuleGroupIndex  int     `xorm:"rule_group_idx"`
-	Record          *Record `xorm:"json"`
+	RuleGroupIndex  int
+	Record          *Record
 	NoDataState     NoDataState
 	ExecErrState    ExecutionErrorState
 	// ideally this field should have been apimodels.ApiDuration
@@ -268,7 +289,17 @@ type AlertRule struct {
 	Annotations          map[string]string
 	Labels               map[string]string
 	IsPaused             bool
-	NotificationSettings []NotificationSettings `xorm:"notification_settings"` // we use slice to workaround xorm mapping that does not serialize a struct to JSON unless it's a slice
+	NotificationSettings []NotificationSettings
+	Metadata             AlertRuleMetadata
+}
+
+type AlertRuleMetadata struct {
+	EditorSettings EditorSettings `json:"editor_settings"`
+}
+
+type EditorSettings struct {
+	SimplifiedQueryAndExpressionsSection bool `json:"simplified_query_and_expressions_section"`
+	SimplifiedNotificationsSection       bool `json:"simplified_notifications_section"`
 }
 
 // Namespaced describes a class of resources that are stored in a specific namespace.
@@ -290,7 +321,8 @@ type AlertRuleWithOptionals struct {
 	AlertRule
 	// This parameter is to know if an optional API field was sent and, therefore, patch it with the current field from
 	// DB in case it was not sent.
-	HasPause bool
+	HasPause    bool
+	HasMetadata bool
 }
 
 // AlertsRulesBy is a function that defines the ordering of alert rules.
@@ -425,13 +457,13 @@ func (alertRule *AlertRule) SetDashboardAndPanelFromAnnotations() error {
 	dashUID := alertRule.Annotations[DashboardUIDAnnotation]
 	panelID := alertRule.Annotations[PanelIDAnnotation]
 	if dashUID != "" && panelID == "" || dashUID == "" && panelID != "" {
-		return fmt.Errorf("both annotations %s and %s must be specified",
+		return fmt.Errorf("%w: both annotations %s and %s must be specified", ErrAlertRuleFailedValidation,
 			DashboardUIDAnnotation, PanelIDAnnotation)
 	}
 	if dashUID != "" {
 		panelIDValue, err := strconv.ParseInt(panelID, 10, 64)
 		if err != nil {
-			return fmt.Errorf("annotation %s must be a valid integer Panel ID",
+			return fmt.Errorf("%w: annotation %s must be a valid integer Panel ID", ErrAlertRuleFailedValidation,
 				PanelIDAnnotation)
 		}
 		alertRule.DashboardUID = &dashUID
@@ -455,6 +487,11 @@ type AlertRuleKeyWithVersion struct {
 	AlertRuleKey `xorm:"extends"`
 }
 
+type AlertRuleKeyWithGroup struct {
+	RuleGroup    string
+	AlertRuleKey `xorm:"extends"`
+}
+
 type AlertRuleKeyWithId struct {
 	AlertRuleKey
 	ID int64
@@ -465,6 +502,11 @@ type AlertRuleGroupKey struct {
 	OrgID        int64
 	NamespaceUID string
 	RuleGroup    string
+}
+
+type AlertRuleGroupKeyWithFolderFullpath struct {
+	AlertRuleGroupKey
+	FolderFullpath string
 }
 
 func (k AlertRuleGroupKey) String() string {
@@ -503,13 +545,18 @@ func (alertRule *AlertRule) GetKey() AlertRuleKey {
 	return AlertRuleKey{OrgID: alertRule.OrgID, UID: alertRule.UID}
 }
 
+// GetKeyWithGroup returns the alert definitions identifier
+func (alertRule *AlertRule) GetKeyWithGroup() AlertRuleKeyWithGroup {
+	return AlertRuleKeyWithGroup{AlertRuleKey: alertRule.GetKey(), RuleGroup: alertRule.RuleGroup}
+}
+
 // GetGroupKey returns the identifier of a group the rule belongs to
 func (alertRule *AlertRule) GetGroupKey() AlertRuleGroupKey {
 	return AlertRuleGroupKey{OrgID: alertRule.OrgID, NamespaceUID: alertRule.NamespaceUID, RuleGroup: alertRule.RuleGroup}
 }
 
 // PreSave sets default values and loads the updated model for each alert query.
-func (alertRule *AlertRule) PreSave(timeNow func() time.Time) error {
+func (alertRule *AlertRule) PreSave(timeNow func() time.Time, userUID *UserUID) error {
 	for i, q := range alertRule.Data {
 		err := q.PreSave()
 		if err != nil {
@@ -518,6 +565,7 @@ func (alertRule *AlertRule) PreSave(timeNow func() time.Time) error {
 		alertRule.Data[i] = q
 	}
 	alertRule.Updated = timeNow()
+	alertRule.UpdatedBy = userUID
 	return nil
 }
 
@@ -596,6 +644,9 @@ func validateRecordingRuleFields(rule *AlertRule) error {
 	if !prommodels.IsValidMetricName(metricName) {
 		return fmt.Errorf("%w: %s", ErrAlertRuleFailedValidation, "metric name for recording rule must be a valid Prometheus metric name")
 	}
+
+	ClearRecordingRuleIgnoredFields(rule)
+
 	return nil
 }
 
@@ -625,38 +676,23 @@ func (alertRule *AlertRule) Type() RuleType {
 	return RuleTypeAlerting
 }
 
-// AlertRuleVersion is the model for alert rule versions in unified alerting.
-type AlertRuleVersion struct {
-	ID               int64  `xorm:"pk autoincr 'id'"`
-	RuleOrgID        int64  `xorm:"rule_org_id"`
-	RuleUID          string `xorm:"rule_uid"`
-	RuleNamespaceUID string `xorm:"rule_namespace_uid"`
-	RuleGroup        string
-	RuleGroupIndex   int `xorm:"rule_group_idx"`
-	ParentVersion    int64
-	RestoredFrom     int64
-	Version          int64
-
-	Created         time.Time
-	Title           string
-	Condition       string
-	Data            []AlertQuery
-	IntervalSeconds int64
-	Record          *Record `xorm:"json"`
-	NoDataState     NoDataState
-	ExecErrState    ExecutionErrorState
-	// ideally this field should have been apimodels.ApiDuration
-	// but this is currently not possible because of circular dependencies
-	For                  time.Duration
-	Annotations          map[string]string
-	Labels               map[string]string
-	IsPaused             bool
-	NotificationSettings []NotificationSettings `xorm:"notification_settings"` // we use slice to workaround xorm mapping that does not serialize a struct to JSON unless it's a slice
+func ClearRecordingRuleIgnoredFields(rule *AlertRule) {
+	rule.NoDataState = ""
+	rule.ExecErrState = ""
+	rule.Condition = ""
+	rule.For = 0
+	rule.NotificationSettings = nil
 }
 
 // GetAlertRuleByUIDQuery is the query for retrieving/deleting an alert rule by UID and organisation ID.
 type GetAlertRuleByUIDQuery struct {
 	UID   string
+	OrgID int64
+}
+
+// GetAlertRuleByIDQuery is the query for retrieving/deleting an alert rule by ID and organisation ID.
+type GetAlertRuleByIDQuery struct {
+	ID    int64
 	OrgID int64
 }
 
@@ -793,6 +829,13 @@ func PatchPartialAlertRule(existingRule *AlertRule, ruleToPatch *AlertRuleWithOp
 	if !ruleToPatch.HasPause {
 		ruleToPatch.IsPaused = existingRule.IsPaused
 	}
+
+	// Currently metadata contains only editor settings, so we can just copy it.
+	// If we add more fields to metadata, we might need to handle them separately,
+	// and/or merge or update their values.
+	if !ruleToPatch.HasMetadata {
+		ruleToPatch.Metadata = existingRule.Metadata
+	}
 }
 
 func ValidateRuleGroupInterval(intervalSeconds, baseIntervalSeconds int64) error {
@@ -876,4 +919,12 @@ func (r *Record) Fingerprint() data.Fingerprint {
 
 func hasAnyCondition(rule *AlertRuleWithOptionals) bool {
 	return rule.Condition != "" || (rule.Record != nil && rule.Record.From != "")
+}
+
+// RuleStatus contains info about a rule's current evaluation state.
+type RuleStatus struct {
+	Health              string
+	LastError           error
+	EvaluationTimestamp time.Time
+	EvaluationDuration  time.Duration
 }

@@ -1,12 +1,13 @@
 package grpc
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	claims "github.com/grafana/authlib/types"
 	"github.com/grafana/grafana/pkg/apimachinery/identity"
+	"github.com/grafana/grafana/pkg/infra/tracing"
 )
 
 func TestBasicEncodeDecode(t *testing.T) {
@@ -14,19 +15,19 @@ func TestBasicEncodeDecode(t *testing.T) {
 		UserID:  123,
 		UserUID: "abc",
 		Login:   "test",
-		Type:    identity.TypeUser,
+		Type:    claims.TypeUser,
 		OrgID:   456,
-		OrgName: "org",
 		OrgRole: identity.RoleAdmin,
 	}
 
-	auth := &Authenticator{}
+	auth := &Authenticator{Tracer: tracing.NewNoopTracerService()}
 
 	md := encodeIdentityInMetadata(before)
-	after, err := auth.decodeMetadata(context.Background(), md)
+	after, err := auth.decodeMetadata(md)
 	require.NoError(t, err)
 	require.Equal(t, before.GetID(), after.GetID())
 	require.Equal(t, before.GetUID(), after.GetUID())
+	require.Equal(t, before.GetIdentityType(), after.GetIdentityType())
 	require.Equal(t, before.GetLogin(), after.GetLogin())
 	require.Equal(t, before.GetOrgID(), after.GetOrgID())
 	require.Equal(t, before.GetOrgName(), after.GetOrgName())

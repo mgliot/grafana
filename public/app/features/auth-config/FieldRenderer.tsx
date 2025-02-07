@@ -42,6 +42,13 @@ export const FieldRenderer = ({
     }
   }, [unregister, name, parentValue, isDependantField]);
 
+  useEffect(() => {
+    if (fieldData.defaultValue) {
+      setValue(name, fieldData.defaultValue.value);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   if (!field) {
     console.log('missing field:', name);
     return null;
@@ -146,6 +153,12 @@ export const FieldRenderer = ({
           {...fieldProps}
           className={css({ marginBottom: theme.spacing(2) })}
         />
+      );
+    case 'custom':
+      return (
+        <Field key={name} {...fieldProps}>
+          {fieldData.content ? fieldData.content(setValue) : <></>}
+        </Field>
       );
     default:
       console.error(`Unknown field type: ${fieldData.type}`);

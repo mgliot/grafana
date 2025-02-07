@@ -5,7 +5,7 @@ import {
   identityOverrideProcessor,
   PanelPlugin,
 } from '@grafana/data';
-import { VisibilityMode } from '@grafana/schema';
+import { AxisPlacement, VisibilityMode } from '@grafana/schema';
 import { commonOptionsBuilder } from '@grafana/ui';
 
 import { InsertNullsEditor } from '../timeseries/InsertNullsEditor';
@@ -76,6 +76,11 @@ export const plugin = new PanelPlugin<Options, FieldConfig>(StateTimelinePanel)
         });
 
       commonOptionsBuilder.addHideFrom(builder);
+      commonOptionsBuilder.addAxisPlacement(
+        builder,
+        (placement) => placement === AxisPlacement.Auto || placement === AxisPlacement.Hidden
+      );
+      commonOptionsBuilder.addAxisWidth(builder);
     },
   })
   .setPanelOptions((builder) => {
@@ -118,6 +123,15 @@ export const plugin = new PanelPlugin<Options, FieldConfig>(StateTimelinePanel)
           step: 0.01,
         },
         defaultValue: defaultOptions.rowHeight,
+      })
+      .addNumberInput({
+        path: 'perPage',
+        name: 'Page size (enable pagination)',
+        settings: {
+          min: 1,
+          step: 1,
+          integer: true,
+        },
       });
 
     commonOptionsBuilder.addLegendOptions(builder, false);

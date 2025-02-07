@@ -76,6 +76,20 @@ export function getOperationDefinitions(): QueryBuilderOperationDef[] {
     createRangeFunction(PromOperationId.Idelta),
     createRangeFunction(PromOperationId.Delta),
     createFunction({
+      id: PromOperationId.DoubleExponentialSmoothing,
+      params: [
+        getRangeVectorParamDef(),
+        { name: 'Smoothing Factor', type: 'number' },
+        { name: 'Trend Factor', type: 'number' },
+      ],
+      defaultParams: ['$__interval', 0.5, 0.5],
+      alternativesKey: 'range function',
+      category: PromVisualQueryOperationCategory.RangeFunctions,
+      renderer: rangeRendererRightWithParams,
+      addOperationHandler: addOperationWithRangeVector,
+      changeTypeHandler: operationTypeChangedHandlerForRangeFunction,
+    }),
+    createFunction({
       id: PromOperationId.HoltWinters,
       params: [
         getRangeVectorParamDef(),
@@ -195,7 +209,6 @@ export function getOperationDefinitions(): QueryBuilderOperationDef[] {
     //
     createFunction({ id: PromOperationId.Exp }),
     createFunction({ id: PromOperationId.Floor }),
-    createFunction({ id: PromOperationId.Group }),
     createFunction({ id: PromOperationId.Hour }),
     createFunction({
       id: PromOperationId.LabelJoin,

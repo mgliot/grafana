@@ -1,33 +1,117 @@
 package identity
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
 
-var _ Requester = &StaticRequester{}
+	authnlib "github.com/grafana/authlib/authn"
+	claims "github.com/grafana/authlib/types"
+)
+
+var _ Requester = (*StaticRequester)(nil)
 
 // StaticRequester allows creating requester values explicitly.
 // It is helpful in tests!
 // This is mostly copied from:
 // https://github.com/grafana/grafana/blob/v11.0.0/pkg/services/user/identity.go#L16
 type StaticRequester struct {
-	Type                       IdentityType
-	UserID                     int64
-	UserUID                    string
-	OrgID                      int64
-	OrgName                    string
-	OrgRole                    RoleType
-	Login                      string
-	Name                       string
-	DisplayName                string
-	Email                      string
-	EmailVerified              bool
-	AuthID                     string
-	AuthenticatedBy            string
-	AllowedKubernetesNamespace string
-	IsGrafanaAdmin             bool
+	Type            claims.IdentityType
+	UserID          int64
+	UserUID         string
+	OrgID           int64
+	OrgName         string
+	OrgRole         RoleType
+	Login           string
+	Name            string
+	Email           string
+	EmailVerified   bool
+	AuthID          string
+	AuthenticatedBy string
+	Namespace       string
+	IsGrafanaAdmin  bool
 	// Permissions grouped by orgID and actions
-	Permissions map[int64]map[string][]string
-	IDToken     string
-	CacheKey    string
+	Permissions   map[int64]map[string][]string
+	IDToken       string
+	IDTokenClaims *authnlib.Claims[authnlib.IDTokenClaims]
+	CacheKey      string
+}
+
+// GetID returns typed id for the entity
+func (u *StaticRequester) GetID() string {
+	return claims.NewTypeID(u.Type, strconv.FormatInt(u.UserID, 10))
+}
+
+func (u *StaticRequester) GetUID() string {
+	return claims.NewTypeID(u.Type, u.UserUID)
+}
+
+func (u *StaticRequester) GetIdentifier() string {
+	return u.UserUID
+}
+
+func (u *StaticRequester) GetIdentityType() claims.IdentityType {
+	return u.Type
+}
+
+func (u *StaticRequester) GetSubject() string {
+	return claims.NewTypeID(u.Type, strconv.FormatInt(u.UserID, 10))
+}
+
+func (u *StaticRequester) GetAudience() []string {
+	return []string{fmt.Sprintf("org:%d", u.OrgID)}
+}
+
+func (u *StaticRequester) GetTokenPermissions() []string {
+	return []string{}
+}
+
+func (u *StaticRequester) GetTokenDelegatedPermissions() []string {
+	return []string{}
+}
+
+func (u *StaticRequester) GetEmail() string {
+	return u.Email
+}
+
+func (u *StaticRequester) GetEmailVerified() bool {
+	return u.EmailVerified
+}
+
+func (u *StaticRequester) GetUsername() string {
+	return u.Login
+}
+
+func (u *StaticRequester) GetRawIdentifier() string {
+	return u.UserUID
+}
+
+func (u *StaticRequester) GetInternalID() (int64, error) {
+	return u.UserID, nil
+}
+
+func (u *StaticRequester) IsIdentityType(expected ...claims.IdentityType) bool {
+	return claims.IsIdentityType(u.GetIdentityType(), expected...)
+}
+
+func (u *StaticRequester) GetExtra() map[string][]string {
+	if u.IDToken != "" {
+		return map[string][]string{"id-token": {u.IDToken}}
+	}
+	return map[string][]string{}
+}
+
+func (u *StaticRequester) GetGroups() []string {
+	return []string{}
+}
+
+func (u *StaticRequester) GetName() string {
+	if u.Name != "" {
+		return u.Name
+	}
+	if u.Login != "" {
+		return u.Login
+	}
+	return u.Email
 }
 
 func (u *StaticRequester) HasRole(role RoleType) bool {
@@ -104,28 +188,12 @@ func (u *StaticRequester) HasUniqueId() bool {
 	return u.UserID > 0
 }
 
-// GetID returns namespaced id for the entity
-func (u *StaticRequester) GetID() TypedID {
-	return NewTypedIDString(u.Type, fmt.Sprintf("%d", u.UserID))
-}
-
-// GetUID returns namespaced uid for the entity
-func (u *StaticRequester) GetUID() TypedID {
-	return NewTypedIDString(u.Type, u.UserUID)
-}
-
-// GetTypedID returns the namespace and ID of the active entity
-// The namespace is one of the constants defined in pkg/apimachinery/identity
-func (u *StaticRequester) GetTypedID() (IdentityType, string) {
-	return u.Type, fmt.Sprintf("%d", u.UserID)
-}
-
 func (u *StaticRequester) GetAuthID() string {
 	return u.AuthID
 }
 
-func (u *StaticRequester) GetAllowedKubernetesNamespace() string {
-	return u.AllowedKubernetesNamespace
+func (u *StaticRequester) GetNamespace() string {
+	return u.Namespace
 }
 
 func (u *StaticRequester) GetAuthenticatedBy() string {
@@ -146,33 +214,12 @@ func (u *StaticRequester) IsNil() bool {
 	return u == nil
 }
 
-// GetEmail returns the email of the active entity
-// Can be empty.
-func (u *StaticRequester) GetEmail() string {
-	return u.Email
-}
-
 func (u *StaticRequester) IsEmailVerified() bool {
 	return u.EmailVerified
 }
 
 func (u *StaticRequester) GetCacheKey() string {
 	return u.CacheKey
-}
-
-// GetDisplayName returns the display name of the active entity
-// The display name is the name if it is set, otherwise the login or email
-func (u *StaticRequester) GetDisplayName() string {
-	if u.DisplayName != "" {
-		return u.DisplayName
-	}
-	if u.Name != "" {
-		return u.Name
-	}
-	if u.Login != "" {
-		return u.Login
-	}
-	return u.Email
 }
 
 func (u *StaticRequester) GetIDToken() string {

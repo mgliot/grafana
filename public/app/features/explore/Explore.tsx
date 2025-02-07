@@ -22,9 +22,9 @@ import { getDataSourceSrv, reportInteraction } from '@grafana/runtime';
 import { DataQuery } from '@grafana/schema';
 import {
   AdHocFilterItem,
-  CustomScrollbar,
   ErrorBoundaryAlert,
   PanelContainer,
+  ScrollContainer,
   Themeable2,
   withTheme2,
 } from '@grafana/ui';
@@ -323,6 +323,10 @@ export class Explore extends PureComponent<Props, ExploreState> {
     };
   };
 
+  onPinLineCallback = () => {
+    this.setState({ contentOutlineVisible: true });
+  };
+
   renderEmptyState(exploreContainerStyles: string) {
     return (
       <div className={cx(exploreContainerStyles)}>
@@ -336,7 +340,7 @@ export class Explore extends PureComponent<Props, ExploreState> {
   }
 
   renderCustom(width: number) {
-    const { timeZone, queryResponse, absoluteRange, eventBus } = this.props;
+    const { timeZone, queryResponse, eventBus } = this.props;
 
     const groupedByPlugin = groupBy(queryResponse?.customFrames, 'meta.preferredVisualisationPluginId');
 
@@ -349,7 +353,7 @@ export class Explore extends PureComponent<Props, ExploreState> {
             pluginId={pluginId}
             frames={frames}
             state={queryResponse.state}
-            absoluteRange={absoluteRange}
+            timeRange={queryResponse.timeRange}
             height={400}
             width={width}
             splitOpenFn={this.onSplitOpen(pluginId)}
@@ -361,7 +365,7 @@ export class Explore extends PureComponent<Props, ExploreState> {
   }
 
   renderGraphPanel(width: number) {
-    const { graphResult, absoluteRange, timeZone, queryResponse, showFlameGraph } = this.props;
+    const { graphResult, timeZone, queryResponse, showFlameGraph } = this.props;
 
     return (
       <ContentOutlineItem panelId="Graph" title="Graph" icon="graph-bar">
@@ -369,7 +373,7 @@ export class Explore extends PureComponent<Props, ExploreState> {
           data={graphResult!}
           height={showFlameGraph ? 180 : 400}
           width={width}
-          absoluteRange={absoluteRange}
+          timeRange={queryResponse.timeRange}
           timeZone={timeZone}
           onChangeTime={this.onUpdateTimeRange}
           annotations={queryResponse.annotations}
@@ -414,6 +418,8 @@ export class Explore extends PureComponent<Props, ExploreState> {
     );
   }
 
+  splitOpenFnLogs = this.onSplitOpen('logs');
+
   renderLogsPanel(width: number) {
     const { exploreId, syncedTimes, theme, queryResponse } = this.props;
     const spacing = parseInt(theme.spacing(2).slice(0, -2), 10);
@@ -435,14 +441,12 @@ export class Explore extends PureComponent<Props, ExploreState> {
           onStartScanning={this.onStartScanning}
           onStopScanning={this.onStopScanning}
           eventBus={this.logsEventBus}
-          splitOpenFn={this.onSplitOpen('logs')}
+          splitOpenFn={this.splitOpenFnLogs}
           scrollElement={this.scrollElement}
           isFilterLabelActive={this.isFilterLabelActive}
           onClickFilterString={this.onClickFilterString}
           onClickFilterOutString={this.onClickFilterOutString}
-          onPinLineCallback={() => {
-            this.setState({ contentOutlineVisible: true });
-          }}
+          onPinLineCallback={this.onPinLineCallback}
         />
       </ContentOutlineItem>
     );
@@ -578,10 +582,9 @@ export class Explore extends PureComponent<Props, ExploreState> {
             {contentOutlineVisible && (
               <ContentOutline scroller={this.scrollElement} panelId={`content-outline-container-${exploreId}`} />
             )}
-            <CustomScrollbar
-              testId={selectors.pages.Explore.General.scrollView}
-              scrollRefCallback={(scrollElement) => (this.scrollElement = scrollElement || undefined)}
-              hideHorizontalTrack
+            <ScrollContainer
+              data-testid={selectors.pages.Explore.General.scrollView}
+              ref={(scrollElement) => (this.scrollElement = scrollElement || undefined)}
             >
               <div className={styles.exploreContainer}>
                 {datasourceInstance ? (
@@ -649,7 +652,7 @@ export class Explore extends PureComponent<Props, ExploreState> {
                   this.renderEmptyState(styles.exploreContainer)
                 )}
               </div>
-            </CustomScrollbar>
+            </ScrollContainer>
           </div>
         </div>
       </ContentOutlineContextProvider>
@@ -676,7 +679,6 @@ function mapStateToProps(state: StoreState, { exploreId }: ExploreProps) {
     showTable,
     showTrace,
     showCustom,
-    absoluteRange,
     queryResponse,
     showNodeGraph,
     showFlameGraph,
@@ -697,7 +699,6 @@ function mapStateToProps(state: StoreState, { exploreId }: ExploreProps) {
     isLive,
     graphResult,
     logsResult: logsResult ?? undefined,
-    absoluteRange,
     queryResponse,
     syncedTimes,
     timeZone,

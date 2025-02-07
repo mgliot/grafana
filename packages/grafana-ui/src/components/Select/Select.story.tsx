@@ -5,10 +5,11 @@ import Chance from 'chance';
 import { useState } from 'react';
 
 import { SelectableValue, toIconName } from '@grafana/data';
-import { Icon, Select, AsyncSelect, MultiSelect, AsyncMultiSelect } from '@grafana/ui';
 
 import { getAvailableIcons } from '../../types';
+import { Icon } from '../Icon/Icon';
 
+import { AsyncMultiSelect, AsyncSelect, MultiSelect, Select } from './Select';
 import mdx from './Select.mdx';
 import { generateOptions, generateThousandsOfOptions } from './mockOptions';
 import { SelectCommonProps } from './types';
@@ -305,6 +306,33 @@ export const MultiSelectBasic: StoryFn = (args) => {
 };
 
 MultiSelectBasic.args = {
+  isClearable: false,
+  closeMenuOnSelect: false,
+  maxVisibleValues: 5,
+  noMultiValueWrap: false,
+};
+
+export const MultiSelectBasicWithSelectAll: StoryFn = (args) => {
+  const [value, setValue] = useState<Array<SelectableValue<string>>>([]);
+
+  return (
+    <div style={{ maxWidth: '450px' }}>
+      <MultiSelect
+        options={generateOptions()}
+        value={value}
+        toggleAllOptions={{ enabled: true }}
+        onChange={(v) => {
+          setValue(v);
+          action('onChange')(v);
+        }}
+        prefix={getPrefix(args.icon)}
+        {...args}
+      />
+    </div>
+  );
+};
+
+MultiSelectBasicWithSelectAll.args = {
   isClearable: false,
   closeMenuOnSelect: false,
   maxVisibleValues: 5,

@@ -3,14 +3,17 @@ package sql
 import (
 	"context"
 
-	"github.com/grafana/dskit/services"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc/health/grpc_health_v1"
+
+	"github.com/grafana/dskit/services"
 
 	infraDB "github.com/grafana/grafana/pkg/infra/db"
 	"github.com/grafana/grafana/pkg/infra/log"
 	"github.com/grafana/grafana/pkg/infra/tracing"
 	"github.com/grafana/grafana/pkg/modules"
+	"github.com/grafana/grafana/pkg/services/authn/grpcutils"
+	"github.com/grafana/grafana/pkg/services/authz"
 	"github.com/grafana/grafana/pkg/services/featuremgmt"
 	"github.com/grafana/grafana/pkg/services/grpcserver"
 	"github.com/grafana/grafana/pkg/services/grpcserver/interceptors"
@@ -20,11 +23,14 @@ import (
 )
 
 var (
-	_ Service = (*service)(nil)
+	_ UnifiedStorageGrpcService = (*service)(nil)
 )
 
-type Service interface {
+type UnifiedStorageGrpcService interface {
 	services.NamedService
+
+	// Return the address where this service is running
+	GetAddress() string
 }
 
 type service struct {
@@ -43,14 +49,19 @@ type service struct {
 	authenticator interceptors.Authenticator
 
 	log log.Logger
+	reg prometheus.Registerer
+
+	docBuilders resource.DocumentBuilderSupplier
 }
 
-func ProvideService(
+func ProvideUnifiedStorageGrpcService(
 	cfg *setting.Cfg,
 	features featuremgmt.FeatureToggles,
 	db infraDB.DB,
 	log log.Logger,
-) (*service, error) {
+	reg prometheus.Registerer,
+	docBuilders resource.DocumentBuilderSupplier,
+) (UnifiedStorageGrpcService, error) {
 	tracingCfg, err := tracing.ProvideTracingConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -62,7 +73,18 @@ func ProvideService(
 		return nil, err
 	}
 
-	authn := &grpc.Authenticator{}
+	// reg can be nil when running unified storage in standalone mode
+	if reg == nil {
+		reg = prometheus.DefaultRegisterer
+	}
+
+	// FIXME: This is a temporary solution while we are migrating to the new authn interceptor
+	// grpcutils.NewGrpcAuthenticator should be used instead.
+	fallback := &grpc.Authenticator{Tracer: tracing}
+	authn, err := grpcutils.NewGrpcAuthenticatorWithFallback(cfg, reg, tracing, fallback)
+	if err != nil {
+		return nil, err
+	}
 
 	s := &service{
 		cfg:           cfg,
@@ -72,6 +94,8 @@ func ProvideService(
 		tracing:       tracing,
 		db:            db,
 		log:           log,
+		reg:           reg,
+		docBuilders:   docBuilders,
 	}
 
 	// This will be used when running as a dskit service
@@ -81,7 +105,12 @@ func ProvideService(
 }
 
 func (s *service) start(ctx context.Context) error {
-	server, err := ProvideResourceServer(s.db, s.cfg, s.features, s.tracing)
+	authzClient, err := authz.ProvideStandaloneAuthZClient(s.cfg, s.features, s.tracing)
+	if err != nil {
+		return err
+	}
+
+	server, err := NewResourceServer(ctx, s.db, s.cfg, s.features, s.docBuilders, s.tracing, s.reg, authzClient)
 	if err != nil {
 		return err
 	}
@@ -95,8 +124,12 @@ func (s *service) start(ctx context.Context) error {
 		return err
 	}
 
-	resource.RegisterResourceStoreServer(s.handler.GetServer(), server)
-	grpc_health_v1.RegisterHealthServer(s.handler.GetServer(), healthService)
+	srv := s.handler.GetServer()
+	resource.RegisterResourceStoreServer(srv, server)
+	resource.RegisterResourceIndexServer(srv, server)
+	resource.RegisterBlobStoreServer(srv, server)
+	resource.RegisterDiagnosticsServer(srv, server)
+	grpc_health_v1.RegisterHealthServer(srv, healthService)
 
 	// register reflection service
 	_, err = grpcserver.ProvideReflectionService(s.cfg, s.handler)

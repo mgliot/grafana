@@ -2,6 +2,7 @@ package writer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,12 +11,11 @@ import (
 
 	"github.com/benbjohnson/clock"
 	"github.com/grafana/dataplane/sdata/numeric"
-	"github.com/grafana/grafana/pkg/infra/log"
-	"github.com/grafana/grafana/pkg/infra/tracing"
-	"github.com/grafana/grafana/pkg/services/ngalert/metrics"
-	"github.com/grafana/grafana/pkg/services/ngalert/models"
-	"github.com/grafana/grafana/pkg/setting"
 	"github.com/m3db/prometheus_remote_client_golang/promremote"
+
+	"github.com/grafana/grafana/pkg/infra/log"
+	"github.com/grafana/grafana/pkg/services/ngalert/metrics"
+	"github.com/grafana/grafana/pkg/setting"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
@@ -26,9 +26,20 @@ const backendType = "prometheus"
 const (
 	// Fixed error messages
 	MimirDuplicateTimestampError = "err-mimir-sample-duplicate-timestamp"
+	MimirInvalidLabelError       = "err-mimir-label-invalid"
+	MimirMaxSeriesPerUserError   = "err-mimir-max-series-per-user"
+	MimirLabelValueTooLongError  = "err-mimir-label-value-too-long"
 
 	// Best effort error messages
 	PrometheusDuplicateTimestampError = "duplicate sample for timestamp"
+)
+
+var (
+	// Unexpected, 500-like write errors.
+	ErrUnexpectedWriteFailure = errors.New("failed to write time series")
+	// Expected, user-level write errors like trying to write an invalid series.
+	ErrRejectedWrite = errors.New("series was rejected")
+	ErrBadFrame      = errors.New("failed to read dataframe")
 )
 
 var DuplicateTimestampErrors = [...]string{
@@ -62,9 +73,15 @@ func PointsFromFrames(name string, t time.Time, frames data.Frames, extraLabels 
 
 	points := make([]Point, 0, len(col.Refs))
 	for _, ref := range col.Refs {
-		fp, empty, _ := ref.NullableFloat64Value()
-		if empty || fp == nil {
-			return nil, fmt.Errorf("unable to read float64 value")
+		fp, empty, err := ref.NullableFloat64Value()
+		if err != nil {
+			return nil, fmt.Errorf("unable to read float64 value: %w", err)
+		}
+		if empty {
+			return nil, fmt.Errorf("empty frame")
+		}
+		if fp == nil {
+			return nil, fmt.Errorf("nil frame")
 		}
 
 		metric := Metric{
@@ -106,7 +123,6 @@ func NewPrometheusWriter(
 	settings setting.RecordingRuleSettings,
 	httpClientProvider HttpClientProvider,
 	clock clock.Clock,
-	tracer tracing.Tracer,
 	l log.Logger,
 	metrics *metrics.RemoteWriter,
 ) (*PrometheusWriter, error) {
@@ -119,14 +135,9 @@ func NewPrometheusWriter(
 		headers.Add(k, v)
 	}
 
-	middlewares := []httpclient.Middleware{
-		httpclient.TracingMiddleware(tracer),
-	}
-
 	cl, err := httpClientProvider.New(httpclient.Options{
-		Middlewares: middlewares,
-		BasicAuth:   createAuthOpts(settings.BasicAuthUsername, settings.BasicAuthPassword),
-		Header:      headers,
+		BasicAuth: createAuthOpts(settings.BasicAuthUsername, settings.BasicAuthPassword),
+		Header:    headers,
 	})
 	if err != nil {
 		return nil, err
@@ -181,18 +192,13 @@ func createAuthOpts(username, password string) *httpclient.BasicAuthOptions {
 }
 
 // Write writes the given frames to the Prometheus remote write endpoint.
-func (w PrometheusWriter) Write(ctx context.Context, name string, t time.Time, frames data.Frames, extraLabels map[string]string) error {
+func (w PrometheusWriter) Write(ctx context.Context, name string, t time.Time, frames data.Frames, orgID int64, extraLabels map[string]string) error {
 	l := w.logger.FromContext(ctx)
-	ruleKey, found := models.RuleKeyFromContext(ctx)
-	if !found {
-		// sanity check, this should never happen
-		return fmt.Errorf("rule key not found in context")
-	}
-	lvs := []string{fmt.Sprint(ruleKey.OrgID), backendType}
+	lvs := []string{fmt.Sprint(orgID), backendType}
 
 	points, err := PointsFromFrames(name, t, frames, extraLabels)
 	if err != nil {
-		return err
+		return errors.Join(ErrBadFrame, err)
 	}
 
 	series := make([]promremote.TimeSeries, 0, len(points))
@@ -214,10 +220,12 @@ func (w PrometheusWriter) Write(ctx context.Context, name string, t time.Time, f
 	lvs = append(lvs, fmt.Sprint(res.StatusCode))
 	w.metrics.WritesTotal.WithLabelValues(lvs...).Inc()
 
-	if err, ignored := checkWriteError(writeErr); err != nil {
-		return fmt.Errorf("failed to write time series: %w", err)
-	} else if ignored {
-		l.Debug("Ignored write error", "error", err, "status_code", res.StatusCode)
+	if writeErr != nil {
+		if err, ignored := checkWriteError(writeErr); err != nil {
+			return err
+		} else if ignored {
+			l.Debug("Ignored write error", "error", err, "status_code", res.StatusCode)
+		}
 	}
 
 	return nil
@@ -243,7 +251,12 @@ func checkWriteError(writeErr promremote.WriteError) (err error, ignored bool) {
 		return nil, false
 	}
 
-	// special case for 400 status code
+	// All 500-range statuses are automatically unexpected and not the fault of the data.
+	if writeErr.StatusCode()/100 == 5 {
+		return errors.Join(ErrUnexpectedWriteFailure, writeErr), false
+	}
+
+	// Special case for 400 status code. 400s may be ignorable in the event of HA writers, or the fault of the written data.
 	if writeErr.StatusCode() == 400 {
 		msg := writeErr.Error()
 		// HA may potentially write different values for the same timestamp, so we ignore this error
@@ -253,7 +266,25 @@ func checkWriteError(writeErr promremote.WriteError) (err error, ignored bool) {
 				return nil, true
 			}
 		}
+
+		if strings.Contains(msg, MimirInvalidLabelError) {
+			return errors.Join(ErrRejectedWrite, writeErr), false
+		}
+
+		// this can happen when user exceeded defined maximum of
+		if strings.Contains(msg, MimirMaxSeriesPerUserError) {
+			return errors.Join(ErrRejectedWrite, writeErr), false
+		}
+
+		if strings.Contains(msg, MimirLabelValueTooLongError) {
+			return errors.Join(ErrRejectedWrite, writeErr), false
+		}
+
+		// For now, all 400s that are not previously known are considered unexpected.
+		// TODO: Consider blanket-converting all 400s to be known errors. This should only be done once we are confident this is not a problem with this client.
+		return errors.Join(ErrUnexpectedWriteFailure, writeErr), false
 	}
 
-	return writeErr, false
+	// All other errors which do not fit into the above categories are also unexpected.
+	return errors.Join(ErrUnexpectedWriteFailure, writeErr), false
 }

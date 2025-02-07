@@ -1,13 +1,12 @@
 import { xor } from 'lodash';
-import { ValidateResult } from 'react-hook-form';
 
 import {
   DataFrame,
-  isTimeSeriesFrames,
   LoadingState,
   PanelData,
   ThresholdsConfig,
   ThresholdsMode,
+  isTimeSeriesFrames,
 } from '@grafana/data';
 import { GraphThresholdsStyleMode } from '@grafana/schema';
 import { config } from 'app/core/config';
@@ -15,8 +14,6 @@ import { EvalFunction } from 'app/features/alerting/state/alertDef';
 import { isExpressionQuery } from 'app/features/expressions/guards';
 import { ClassicCondition, ExpressionQueryType } from 'app/features/expressions/types';
 import { AlertQuery } from 'app/types/unified-alerting-dto';
-
-import { RuleFormType } from '../../types/rule-form';
 
 import { createDagFromQueries, getOriginOfRefId } from './dag';
 
@@ -89,17 +86,8 @@ export function refIdExists(queries: AlertQuery[], refId: string | null): boolea
   return queries.find((query) => query.refId === refId) !== undefined;
 }
 
-// some gateways (like Istio) will decode "/" and "\" characters – this will cause 404 errors for any API call
-// that includes these values in the URL (ie. /my/path%2fto/resource -> /my/path/to/resource)
-//
-// see https://istio.io/latest/docs/ops/best-practices/security/#customize-your-system-on-path-normalization
-export function checkForPathSeparator(value: string): ValidateResult {
-  const containsPathSeparator = value.includes('/') || value.includes('\\');
-  if (containsPathSeparator) {
-    return 'Cannot contain "/" or "\\" characters';
-  }
-
-  return true;
+export function containsPathSeparator(value: string): boolean {
+  return value.includes('/') || value.includes('\\');
 }
 
 // this function assumes we've already checked if the data passed in to the function is of the alert condition
@@ -320,18 +308,6 @@ export function getStatusMessage(data: PanelData): string | undefined {
   }
 
   return data.error?.message ?? genericErrorMessage;
-}
-
-export function translateRouteParamToRuleType(param = ''): RuleFormType {
-  if (param === 'recording') {
-    return RuleFormType.cloudRecording;
-  }
-
-  if (param === 'grafana-recording') {
-    return RuleFormType.grafanaRecording;
-  }
-
-  return RuleFormType.grafana;
 }
 
 /**
