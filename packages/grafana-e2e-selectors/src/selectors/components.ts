@@ -925,8 +925,12 @@ export const versionedComponents = {
           },
         },
         geojson: {
-          option: 'Geojson location option',
-          geohashFieldLabel: 'root Geojson field field property editor',
+          option: {
+            '9.1.2': 'Geojson location option',
+          },
+          geohashFieldLabel: {
+            '9.1.2': 'root Geojson field field property editor',
+          },
         },
         lookup: {
           option: {
