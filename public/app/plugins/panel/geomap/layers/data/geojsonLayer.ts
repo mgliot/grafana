@@ -9,7 +9,7 @@ import { map as rxjsmap, first } from 'rxjs/operators';
 
 import { MapLayerRegistryItem, MapLayerOptions, PanelData, GrafanaTheme2, EventBus } from '@grafana/data';
 import { ComparisonOperation } from '@grafana/schema';
-import { findField } from 'app/features/dimensions';
+import { findField } from 'app/features/dimensions/utils';
 
 import { GeomapStyleRulesEditor } from '../../editor/GeomapStyleRulesEditor';
 import { StyleEditor } from '../../editor/StyleEditor';
