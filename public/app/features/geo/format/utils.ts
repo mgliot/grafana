@@ -26,11 +26,38 @@ export function pointFieldFromGeohash(geohash: Field<string>): Field<Geometry | 
 
 export function getGeoFieldFromGeoJSON(geojson: Field<String>): Field<Geometry | undefined> {
   const count = geojson.values.length;
-  const geo = new Array<Geometry>(count);
+  const geo = new Array<Geometry | undefined>(count);
+  const geoJSONFormat = new GeoJSON();
+
   for (let i = 0; i < geojson.values.length; i++) {
-    geo[i] = geojson.values.get(i)
-      ? new GeoJSON().readGeometry(geojson.values.get(i), { featureProjection: 'EPSG:3857' })
-      : new Geometry();
+    const value = geojson.values.get(i);
+    if (!value) {
+      geo[i] = undefined;
+      continue;
+    }
+
+    try {
+      // Parse the value if it's a string
+      const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+
+      // Check if this is a Feature or FeatureCollection and extract geometry
+      if (parsed.type === 'Feature') {
+        // For Feature, read the feature and get its geometry
+        const feature = geoJSONFormat.readFeature(parsed, { featureProjection: 'EPSG:3857' });
+        geo[i] = feature.getGeometry();
+      } else if (parsed.type === 'FeatureCollection') {
+        // For FeatureCollection, read all features and combine geometries
+        const features = geoJSONFormat.readFeatures(parsed, { featureProjection: 'EPSG:3857' });
+        const geometries = features.map((f) => f.getGeometry()).filter((g): g is Geometry => g !== undefined);
+        geo[i] = geometries.length === 1 ? geometries[0] : new GeometryCollection(geometries);
+      } else {
+        // For raw geometry types (Point, LineString, Polygon, etc.)
+        geo[i] = geoJSONFormat.readGeometry(parsed, { featureProjection: 'EPSG:3857' });
+      }
+    } catch (e) {
+      console.warn('Failed to parse GeoJSON value:', e);
+      geo[i] = undefined;
+    }
   }
   return {
     name: 'Geometry',
