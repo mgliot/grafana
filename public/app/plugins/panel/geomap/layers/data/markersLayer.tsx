@@ -84,11 +84,14 @@ export const markersLayer: MapLayerRegistryItem<MarkersConfig> = {
     const source = new FrameVectorSource<Point>(location);
     const symbolLayer = new WebGLPointsLayer({ source, style: webGLStyle });
     const vectorLayer = new VectorImage({ source, declutter: true });
-    // Initialize hasVector with just text check, will be updated when features are available
-    let hasVector = hasText;
+
+    // Initialize layers with both always present, using visibility to control display
+    // This avoids modifying the layer group during updates which can cause WebGL context errors
+    symbolLayer.setVisible(!!symbol || !hasText);
+    vectorLayer.setVisible(hasText);
 
     const layers = new LayerGroup({
-      layers: hasVector ? (symbol ? [symbolLayer, vectorLayer] : [vectorLayer]) : [symbolLayer],
+      layers: symbol ? [symbolLayer, vectorLayer] : [vectorLayer, symbolLayer],
     });
 
     const legendProps = new ReplaySubject<MarkersLegendProps>(1);
@@ -234,17 +237,11 @@ export const markersLayer: MapLayerRegistryItem<MarkersConfig> = {
             }
           });
 
-          // Update hasVector state after processing all features
-          hasVector = hasText || hasLineString;
-
-          // Update layer visibility based on current hasVector state
-          const layersArray = layers.getLayers();
-          layersArray.clear();
-          if (hasVector) {
-            layersArray.extend(symbol ? [symbolLayer, vectorLayer] : [vectorLayer]);
-          } else {
-            layersArray.extend([symbolLayer]);
-          }
+          // Update layer visibility based on content
+          // Use visibility toggling instead of modifying layer group to avoid WebGL context errors
+          const needsVector = hasText || hasLineString;
+          symbolLayer.setVisible(!!symbol || !needsVector);
+          vectorLayer.setVisible(needsVector);
 
           break; // Only the first frame for now!
         }
