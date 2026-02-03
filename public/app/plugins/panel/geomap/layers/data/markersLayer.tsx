@@ -100,6 +100,13 @@ export const markersLayer: MapLayerRegistryItem<MarkersConfig> = {
     return {
       init: () => layers,
       legend: legend,
+      dispose: () => {
+        // Dispose WebGLPointsLayer to release WebGL context and prevent context leaks
+        symbolLayer.dispose();
+        vectorLayer.dispose();
+        source.clear();
+        legendProps.complete();
+      },
       update: (data: PanelData) => {
         if (!data.series?.length) {
           source.clear();

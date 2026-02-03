@@ -70,6 +70,10 @@ export const heatmapLayer: MapLayerRegistryItem<HeatmapConfig> = {
 
     return {
       init: () => vectorLayer,
+      dispose: () => {
+        vectorLayer.dispose();
+        source.clear();
+      },
       update: (data: PanelData) => {
         const frame = data.series[0];
         if (!frame) {

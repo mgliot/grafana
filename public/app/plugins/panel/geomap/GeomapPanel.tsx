@@ -234,6 +234,10 @@ export class GeomapPanel extends Component<Props, State> {
     }
     this.mapDiv = div;
     if (this.map) {
+      // Dispose layers BEFORE disposing map to properly release WebGL contexts
+      for (const lyr of this.layers) {
+        lyr.handler.dispose?.();
+      }
       this.map.dispose();
     }
 
