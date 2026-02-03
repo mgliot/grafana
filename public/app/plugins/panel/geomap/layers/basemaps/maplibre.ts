@@ -111,14 +111,28 @@ export const maplibreLayer: MapLayerRegistryItem<MaplibreConfig> = {
     // Start loading the style asynchronously
     loadStyle();
 
+    let isDisposed = false;
+
     return {
       init: () => layer,
       dispose: () => {
+        if (isDisposed) {
+          return;
+        }
+        isDisposed = true;
         // Dispose all sublayers to release any WebGL contexts
-        layer.getLayers().forEach((sublayer) => {
-          sublayer.dispose();
-        });
-        layer.dispose();
+        try {
+          layer.getLayers().forEach((sublayer) => {
+            try {
+              sublayer.dispose();
+            } catch (e) {
+              // Ignore errors during sublayer disposal
+            }
+          });
+          layer.dispose();
+        } catch (e) {
+          // Ignore errors during disposal
+        }
       },
       registerOptionsUI: (builder) => {
         builder

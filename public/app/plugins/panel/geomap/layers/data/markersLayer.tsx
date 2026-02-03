@@ -97,17 +97,39 @@ export const markersLayer: MapLayerRegistryItem<MarkersConfig> = {
       legend = <ObservablePropsWrapper watch={legendProps} initialSubProps={{}} child={MarkersLegend} />;
     }
 
+    let isDisposed = false;
+
     return {
       init: () => layers,
       legend: legend,
       dispose: () => {
+        if (isDisposed) {
+          return;
+        }
+        isDisposed = true;
+
+        // Clear the layer group first to prevent further rendering
+        layers.getLayers().clear();
+
         // Dispose WebGLPointsLayer to release WebGL context and prevent context leaks
-        symbolLayer.dispose();
-        vectorLayer.dispose();
+        // Wrapped in try-catch as the WebGL worker may still be processing
+        try {
+          symbolLayer.dispose();
+        } catch (e) {
+          // Ignore errors during disposal - WebGL context may already be lost
+        }
+        try {
+          vectorLayer.dispose();
+        } catch (e) {
+          // Ignore errors during disposal
+        }
         source.clear();
         legendProps.complete();
       },
       update: (data: PanelData) => {
+        if (isDisposed) {
+          return; // Layer has been disposed, ignore updates
+        }
         if (!data.series?.length) {
           source.clear();
           return; // ignore empty

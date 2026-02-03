@@ -68,13 +68,26 @@ export const heatmapLayer: MapLayerRegistryItem<HeatmapConfig> = {
       },
     });
 
+    let isDisposed = false;
+
     return {
       init: () => vectorLayer,
       dispose: () => {
-        vectorLayer.dispose();
+        if (isDisposed) {
+          return;
+        }
+        isDisposed = true;
+        try {
+          vectorLayer.dispose();
+        } catch (e) {
+          // Ignore errors during disposal
+        }
         source.clear();
       },
       update: (data: PanelData) => {
+        if (isDisposed) {
+          return;
+        }
         const frame = data.series[0];
         if (!frame) {
           return;
