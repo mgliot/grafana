@@ -93,7 +93,7 @@ COPY pkg/plugins/codegen pkg/plugins/codegen
 
 RUN go mod download
 RUN if [[ "$BINGO" = "true" ]]; then \
-  go install github.com/bwplotka/bingo@latest && \
+  go install github.com/bwplotka/bingo@v0.9.0 && \
   bingo get -v; \
   fi
 
