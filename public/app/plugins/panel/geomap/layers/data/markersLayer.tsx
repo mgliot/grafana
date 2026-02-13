@@ -2,6 +2,7 @@ import OpenLayersMap from 'ol/Map';
 import { Point } from 'ol/geom';
 import { VectorImage } from 'ol/layer';
 import LayerGroup from 'ol/layer/Group';
+import VectorLayer from 'ol/layer/Vector';
 import WebGLPointsLayer from 'ol/layer/WebGLPoints.js';
 import { ReactNode } from 'react';
 import { ReplaySubject } from 'rxjs';
@@ -23,20 +24,28 @@ import { getLocationMatchers } from 'app/features/geo/utils/location';
 import { MarkersLegend, MarkersLegendProps } from '../../components/MarkersLegend';
 import { ObservablePropsWrapper } from '../../components/ObservablePropsWrapper';
 import { StyleEditor } from '../../editor/StyleEditor';
-import { getWebGLStyle, textMarker } from '../../style/markers';
+import { getMarkerMaker, getWebGLStyle, textMarker } from '../../style/markers';
 import { DEFAULT_SIZE, defaultStyleConfig, StyleConfig, StyleConfigValues } from '../../style/types';
 import { getDisplacement, getRGBValues, getStyleConfigState, styleUsesText } from '../../style/utils';
 import { getStyleDimension } from '../../utils/utils';
+
+// Render mode for markers - Canvas is more compatible but slower, WebGL is faster but limited contexts
+export enum MarkerRenderMode {
+  WebGL = 'webgl',
+  Canvas = 'canvas',
+}
 
 // Configuration options for Circle overlays
 export interface MarkersConfig {
   style: StyleConfig;
   showLegend?: boolean;
+  renderMode?: MarkerRenderMode;
 }
 
 const defaultOptions: MarkersConfig = {
   style: defaultStyleConfig,
   showLegend: true,
+  renderMode: MarkerRenderMode.WebGL,
 };
 
 export const MARKERS_LAYER_ID = 'markers';
@@ -76,22 +85,39 @@ export const markersLayer: MapLayerRegistryItem<MarkersConfig> = {
       ...options?.config,
     };
 
+    const useWebGL = config.renderMode !== MarkerRenderMode.Canvas;
     const style = await getStyleConfigState(config.style);
     const symbol = config.style.symbol?.fixed;
-    const webGLStyle = await getWebGLStyle(symbol, config.style.opacity);
     const hasText = styleUsesText(config.style);
     const location = await getLocationMatchers(options.location);
     const source = new FrameVectorSource<Point>(location);
-    const symbolLayer = new WebGLPointsLayer({ source, style: webGLStyle });
-    const vectorLayer = new VectorImage({ source, declutter: true });
 
-    // Initialize layers with both always present, using visibility to control display
-    // This avoids modifying the layer group during updates which can cause WebGL context errors
-    symbolLayer.setVisible(!!symbol || !hasText);
-    vectorLayer.setVisible(hasText);
+    // Canvas-based marker maker for non-WebGL rendering
+    const markerMaker = await getMarkerMaker(symbol, hasText);
+
+    // Create layers based on render mode
+    let symbolLayer: WebGLPointsLayer<FrameVectorSource<Point>> | VectorLayer<FrameVectorSource<Point>> | undefined;
+    let vectorLayer: VectorImage<FrameVectorSource<Point>>;
+
+    if (useWebGL) {
+      const webGLStyle = await getWebGLStyle(symbol, config.style.opacity);
+      symbolLayer = new WebGLPointsLayer({ source, style: webGLStyle });
+      vectorLayer = new VectorImage({ source, declutter: true });
+
+      // Initialize layers with both always present, using visibility to control display
+      // This avoids modifying the layer group during updates which can cause WebGL context errors
+      symbolLayer.setVisible(!!symbol || !hasText);
+      vectorLayer.setVisible(hasText);
+    } else {
+      // Canvas mode: use VectorLayer with style function for all rendering
+      // This doesn't create WebGL contexts
+      vectorLayer = new VectorImage({ source, declutter: true });
+    }
 
     const layers = new LayerGroup({
-      layers: symbol ? [symbolLayer, vectorLayer] : [vectorLayer, symbolLayer],
+      layers: useWebGL && symbolLayer
+        ? (symbol ? [symbolLayer, vectorLayer] : [vectorLayer, symbolLayer])
+        : [vectorLayer],
     });
 
     const legendProps = new ReplaySubject<MarkersLegendProps>(1);
@@ -115,33 +141,35 @@ export const markersLayer: MapLayerRegistryItem<MarkersConfig> = {
         layers.getLayers().clear();
 
         // Dispose WebGLPointsLayer to release WebGL context and prevent context leaks
-        // Wrapped in try-catch as the WebGL worker may still be processing
-        try {
-          // Force WebGL context loss to immediately free GPU resources
-          // This helps prevent "Too many active WebGL contexts" warnings
-          if ('getRenderer' in symbolLayer && typeof symbolLayer.getRenderer === 'function') {
-            const renderer = symbolLayer.getRenderer();
-            if (renderer) {
-              // Check for helper property that WebGL renderers have
-              if ('helper_' in renderer && renderer.helper_) {
-                const helper = renderer.helper_ as {
-                  getGL?: () => WebGLRenderingContext | WebGL2RenderingContext | null;
-                };
-                if (helper.getGL) {
-                  const gl = helper.getGL();
-                  if (gl) {
-                    const loseContextExt = gl.getExtension?.('WEBGL_lose_context');
-                    if (loseContextExt) {
-                      loseContextExt.loseContext();
+        // Only needed for WebGL mode
+        if (useWebGL && symbolLayer && symbolLayer instanceof WebGLPointsLayer) {
+          try {
+            // Force WebGL context loss to immediately free GPU resources
+            // This helps prevent "Too many active WebGL contexts" warnings
+            if ('getRenderer' in symbolLayer && typeof symbolLayer.getRenderer === 'function') {
+              const renderer = symbolLayer.getRenderer();
+              if (renderer) {
+                // Check for helper property that WebGL renderers have
+                if ('helper_' in renderer && renderer.helper_) {
+                  const helper = renderer.helper_ as {
+                    getGL?: () => WebGLRenderingContext | WebGL2RenderingContext | null;
+                  };
+                  if (helper.getGL) {
+                    const gl = helper.getGL();
+                    if (gl) {
+                      const loseContextExt = gl.getExtension?.('WEBGL_lose_context');
+                      if (loseContextExt) {
+                        loseContextExt.loseContext();
+                      }
                     }
                   }
                 }
               }
             }
+            symbolLayer.dispose();
+          } catch (e) {
+            // Ignore errors during disposal - WebGL context may already be lost
           }
-          symbolLayer.dispose();
-        } catch (e) {
-          // Ignore errors during disposal - WebGL context may already be lost
         }
         try {
           vectorLayer.dispose();
@@ -169,7 +197,7 @@ export const markersLayer: MapLayerRegistryItem<MarkersConfig> = {
               styleConfig: style,
               size: style.dims?.size,
               layerName: options.name,
-              layer: symbolLayer,
+              layer: useWebGL && symbolLayer ? symbolLayer : vectorLayer,
             });
           }
 
@@ -230,40 +258,52 @@ export const markersLayer: MapLayerRegistryItem<MarkersConfig> = {
               processedMarkers.add(markerKey);
             }
 
-            // Set style to be used by LineString
-            if (isLineString) {
-              const lineStringStyle = style.maker(values);
-              feature.setStyle(lineStringStyle);
+            if (useWebGL) {
+              // WebGL mode: Set style for LineString and properties for WebGLPointsLayer
+              if (isLineString) {
+                const lineStringStyle = style.maker(values);
+                feature.setStyle(lineStringStyle);
+              } else {
+                const colorString = tinycolor(theme.visualization.getColorByName(values.color)).toString();
+                const colorValues = getRGBValues(colorString);
+
+                const radius = values.size ?? DEFAULT_SIZE;
+                const displacement = getDisplacement(values.symbolAlign ?? defaultStyleConfig.symbolAlign, radius);
+
+                // WebGLPointsLayer uses style expressions instead of style functions
+                feature.setProperties({ red: colorValues?.r ?? 255 });
+                feature.setProperties({ green: colorValues?.g ?? 255 });
+                feature.setProperties({ blue: colorValues?.b ?? 255 });
+                feature.setProperties({ size: (values.size ?? 1) * 2 }); // TODO unify sizing across all source types
+                feature.setProperties({ rotation: ((values.rotation ?? 0) * Math.PI) / 180 });
+                feature.setProperties({ opacity: (values.opacity ?? 1) * (colorValues?.a ?? 1) });
+                feature.setProperties({ offsetX: displacement[0] });
+                feature.setProperties({ offsetY: displacement[1] });
+              }
+
+              // Set style to be used by VectorLayer (text only)
+              if (hasText) {
+                const textStyle = textMarker(values);
+                feature.setStyle(textStyle);
+              }
             } else {
-              const colorString = tinycolor(theme.visualization.getColorByName(values.color)).toString();
-              const colorValues = getRGBValues(colorString);
-
-              const radius = values.size ?? DEFAULT_SIZE;
-              const displacement = getDisplacement(values.symbolAlign ?? defaultStyleConfig.symbolAlign, radius);
-
-              // WebGLPointsLayer uses style expressions instead of style functions
-              feature.setProperties({ red: colorValues?.r ?? 255 });
-              feature.setProperties({ green: colorValues?.g ?? 255 });
-              feature.setProperties({ blue: colorValues?.b ?? 255 });
-              feature.setProperties({ size: (values.size ?? 1) * 2 }); // TODO unify sizing across all source types
-              feature.setProperties({ rotation: ((values.rotation ?? 0) * Math.PI) / 180 });
-              feature.setProperties({ opacity: (values.opacity ?? 1) * (colorValues?.a ?? 1) });
-              feature.setProperties({ offsetX: displacement[0] });
-              feature.setProperties({ offsetY: displacement[1] });
-            }
-
-            // Set style to be used by VectorLayer (text only)
-            if (hasText) {
-              const textStyle = textMarker(values);
-              feature.setStyle(textStyle);
+              // Canvas mode: Apply full style to each feature using the marker maker
+              const resolvedValues = {
+                ...values,
+                color: theme.visualization.getColorByName(values.color),
+              };
+              const featureStyle = markerMaker(resolvedValues);
+              feature.setStyle(featureStyle);
             }
           });
 
-          // Update layer visibility based on content
-          // Use visibility toggling instead of modifying layer group to avoid WebGL context errors
-          const needsVector = hasText || hasLineString;
-          symbolLayer.setVisible(!!symbol || !needsVector);
-          vectorLayer.setVisible(needsVector);
+          if (useWebGL && symbolLayer) {
+            // Update layer visibility based on content
+            // Use visibility toggling instead of modifying layer group to avoid WebGL context errors
+            const needsVector = hasText || hasLineString;
+            symbolLayer.setVisible(!!symbol || !needsVector);
+            vectorLayer.setVisible(needsVector);
+          }
 
           break; // Only the first frame for now!
         }
@@ -287,6 +327,21 @@ export const markersLayer: MapLayerRegistryItem<MarkersConfig> = {
             name: t('geomap.markers-layer.name-show-legend', 'Show legend'),
             description: t('geomap.markers-layer.description-show-legend', 'Show map legend'),
             defaultValue: defaultOptions.showLegend,
+          })
+          .addRadio({
+            path: 'config.renderMode',
+            name: t('geomap.markers-layer.name-render-mode', 'Render mode'),
+            description: t(
+              'geomap.markers-layer.description-render-mode',
+              'Canvas mode uses less GPU resources and is recommended when using many marker layers. WebGL mode is faster but limited to ~8-16 total layers across all panels.'
+            ),
+            settings: {
+              options: [
+                { value: MarkerRenderMode.WebGL, label: 'WebGL (faster)' },
+                { value: MarkerRenderMode.Canvas, label: 'Canvas (compatible)' },
+              ],
+            },
+            defaultValue: defaultOptions.renderMode,
           });
       },
     };
