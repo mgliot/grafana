@@ -107,8 +107,14 @@ export async function initLayer(
   panel: GeomapPanel,
   map: OpenLayersMap,
   options: MapLayerOptions,
-  isBasemap?: boolean
+  isBasemap?: boolean,
+  signal?: AbortSignal
 ): Promise<MapLayerState> {
+  // Check if aborted before starting
+  if (signal?.aborted) {
+    throw new Error('Layer initialization aborted');
+  }
+
   if (isBasemap && (!options?.type || config.geomapDisableCustomBaseLayer)) {
     options = DEFAULT_BASEMAP_CONFIG;
   }
@@ -132,6 +138,13 @@ export async function initLayer(
   }
 
   const handler = await item.create(map, options, panel.props.eventBus, config.theme2);
+
+  // Check if aborted after async layer creation
+  if (signal?.aborted) {
+    handler.dispose?.();
+    throw new Error('Layer initialization aborted');
+  }
+
   const layer = handler.init(); // eslint-disable-line
   if (options.opacity != null) {
     layer.setOpacity(options.opacity);

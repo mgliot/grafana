@@ -45,6 +45,8 @@ export const maplibreLayer: MapLayerRegistryItem<MaplibreConfig> = {
       opacity: layerOpacity,
     });
 
+    let isDisposed = false;
+
     const applyNoRepeat = () => {
       if (noRepeat) {
         // Set wrapX: false on the first layer source to prevent world repetition
@@ -60,6 +62,11 @@ export const maplibreLayer: MapLayerRegistryItem<MaplibreConfig> = {
 
     // Handle async operations in the background
     const loadStyle = async () => {
+      // Check if already disposed before starting
+      if (isDisposed) {
+        return;
+      }
+
       try {
         if (!cfg.url) {
           console.warn('No URL provided for MapLibre style, layer will be empty');
@@ -67,6 +74,12 @@ export const maplibreLayer: MapLayerRegistryItem<MaplibreConfig> = {
         }
 
         const res = await fetch(cfg.url);
+
+        // Check if disposed during fetch
+        if (isDisposed) {
+          return;
+        }
+
         if (!res.ok) {
           console.warn(`Failed to load MapLibre style from ${cfg.url}: ${res.status} ${res.statusText}`);
           // Try fallback approach
@@ -75,6 +88,11 @@ export const maplibreLayer: MapLayerRegistryItem<MaplibreConfig> = {
         }
 
         const style = await res.json();
+
+        // Check if disposed during JSON parsing
+        if (isDisposed) {
+          return;
+        }
 
         // Adjust background opacity - let LayerGroup opacity handle everything else
         if (Array.isArray(style?.layers)) {
@@ -87,8 +105,25 @@ export const maplibreLayer: MapLayerRegistryItem<MaplibreConfig> = {
         }
 
         await apply(layer, style, { styleUrl: cfg.url, accessToken: cfg.accessToken });
+
+        // Check if disposed during apply - clean up any created sublayers
+        if (isDisposed) {
+          layer.getLayers().forEach((sublayer) => {
+            try {
+              sublayer.dispose();
+            } catch (e) {
+              // Ignore errors during sublayer disposal
+            }
+          });
+          return;
+        }
+
         applyNoRepeat();
       } catch (error) {
+        // Check if disposed during error handling
+        if (isDisposed) {
+          return;
+        }
         console.warn('Failed to parse or apply MapLibre style JSON:', error);
         // Try fallback approach
         await tryFallbackApply();
@@ -96,22 +131,40 @@ export const maplibreLayer: MapLayerRegistryItem<MaplibreConfig> = {
     };
 
     const tryFallbackApply = async () => {
+      // Check if disposed before fallback
+      if (isDisposed) {
+        return;
+      }
+
       try {
         if (!cfg.url) {
           console.warn('No URL available for MapLibre fallback, layer will be empty');
           return;
         }
         await apply(layer, cfg.url, { accessToken: cfg.accessToken });
+
+        // Check if disposed during fallback apply
+        if (isDisposed) {
+          layer.getLayers().forEach((sublayer) => {
+            try {
+              sublayer.dispose();
+            } catch (e) {
+              // Ignore errors during sublayer disposal
+            }
+          });
+          return;
+        }
+
         applyNoRepeat();
       } catch (fallbackError) {
-        console.warn('Failed to load MapLibre style from both JSON and direct URL approaches:', fallbackError);
+        if (!isDisposed) {
+          console.warn('Failed to load MapLibre style from both JSON and direct URL approaches:', fallbackError);
+        }
       }
     };
 
     // Start loading the style asynchronously
     loadStyle();
-
-    let isDisposed = false;
 
     return {
       init: () => layer,

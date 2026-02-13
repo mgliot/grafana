@@ -62,6 +62,11 @@ export class GeomapPanel extends Component<Props, State> {
   panelContext: PanelContext | undefined = undefined;
   private subs = new Subscription();
 
+  // Tracks the current initialization generation to detect stale async operations
+  private initGeneration = 0;
+  // AbortController to cancel pending async initialization
+  private initAbortController?: AbortController;
+
   globalCSS = getGlobalStyles(config.theme2);
 
   mouseWheelZoom?: MouseWheelZoom;
@@ -109,6 +114,8 @@ export class GeomapPanel extends Component<Props, State> {
   }
 
   componentWillUnmount() {
+    // Cancel any pending async initialization
+    this.initAbortController?.abort();
     this.subs.unsubscribe();
     for (const lyr of this.layers) {
       lyr.handler.dispose?.();
@@ -232,13 +239,24 @@ export class GeomapPanel extends Component<Props, State> {
       // Do not initialize new map or dispose old map
       return;
     }
+
+    // Cancel any pending initialization to prevent WebGL context leaks
+    this.initAbortController?.abort();
+    this.initAbortController = new AbortController();
+    const signal = this.initAbortController.signal;
+    const currentGeneration = ++this.initGeneration;
+
     this.mapDiv = div;
+
+    // Dispose old map synchronously before creating new one
     if (this.map) {
       // Dispose layers BEFORE disposing map to properly release WebGL contexts
       for (const lyr of this.layers) {
         lyr.handler.dispose?.();
       }
       this.map.dispose();
+      this.map = undefined;
+      this.layers = [];
     }
 
     const { options } = this.props;
@@ -248,12 +266,27 @@ export class GeomapPanel extends Component<Props, State> {
     this.byName.clear();
     const layers: MapLayerState[] = [];
     try {
+      // Check if aborted before starting layer initialization
+      if (signal.aborted || currentGeneration !== this.initGeneration) {
+        map.dispose();
+        return;
+      }
+
       // Pass noRepeat setting to basemap layer
       const basemapOptions = {
         ...(options.basemap ?? DEFAULT_BASEMAP_CONFIG),
         noRepeat: options.view?.noRepeat ?? false,
       };
-      layers.push(await initLayer(this, map, basemapOptions, true));
+      layers.push(await initLayer(this, map, basemapOptions, true, signal));
+
+      // Check if aborted after basemap layer
+      if (signal.aborted || currentGeneration !== this.initGeneration) {
+        for (const l of layers) {
+          l.handler.dispose?.();
+        }
+        map.dispose();
+        return;
+      }
 
       // Default layer values
       if (!options.layers) {
@@ -261,17 +294,42 @@ export class GeomapPanel extends Component<Props, State> {
       }
 
       for (const lyr of options.layers) {
-        layers.push(await initLayer(this, map, lyr, false));
+        // Check if aborted before each layer
+        if (signal.aborted || currentGeneration !== this.initGeneration) {
+          for (const l of layers) {
+            l.handler.dispose?.();
+          }
+          map.dispose();
+          return;
+        }
+        layers.push(await initLayer(this, map, lyr, false, signal));
       }
     } catch (ex) {
+      // If aborted, clean up and exit silently
+      if (signal.aborted || currentGeneration !== this.initGeneration) {
+        for (const l of layers) {
+          l.handler.dispose?.();
+        }
+        map.dispose();
+        return;
+      }
       console.error('error loading layers', ex);
+    }
+
+    // Final check before committing the new map
+    if (signal.aborted || currentGeneration !== this.initGeneration) {
+      for (const l of layers) {
+        l.handler.dispose?.();
+      }
+      map.dispose();
+      return;
     }
 
     for (const lyr of layers) {
       map.addLayer(lyr.layer);
     }
     this.layers = layers;
-    this.map = map; // redundant
+    this.map = map;
     this.initViewExtent(map.getView(), options.view);
 
     this.mouseWheelZoom = new MouseWheelZoom();
