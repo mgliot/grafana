@@ -177,6 +177,38 @@ export const maplibreLayer: MapLayerRegistryItem<MaplibreConfig> = {
         try {
           layer.getLayers().forEach((sublayer) => {
             try {
+              // Force WebGL context loss to immediately free GPU resources
+              // This helps prevent "Too many active WebGL contexts" warnings
+              if ('getRenderer' in sublayer && typeof sublayer.getRenderer === 'function') {
+                const renderer = sublayer.getRenderer();
+                if (renderer) {
+                  // For WebGL-based layers, get the context and lose it
+                  if ('getContext' in renderer && typeof renderer.getContext === 'function') {
+                    const ctx = renderer.getContext();
+                    if (ctx) {
+                      const loseContextExt = ctx.getExtension?.('WEBGL_lose_context');
+                      if (loseContextExt) {
+                        loseContextExt.loseContext();
+                      }
+                    }
+                  }
+                  // Also check for helper property that some renderers have
+                  if ('helper_' in renderer && renderer.helper_) {
+                    const helper = renderer.helper_ as {
+                      getGL?: () => WebGLRenderingContext | WebGL2RenderingContext | null;
+                    };
+                    if (helper.getGL) {
+                      const gl = helper.getGL();
+                      if (gl) {
+                        const loseContextExt = gl.getExtension?.('WEBGL_lose_context');
+                        if (loseContextExt) {
+                          loseContextExt.loseContext();
+                        }
+                      }
+                    }
+                  }
+                }
+              }
               sublayer.dispose();
             } catch (e) {
               // Ignore errors during sublayer disposal

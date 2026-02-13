@@ -68,6 +68,10 @@ export class GeomapPanel extends Component<Props, State> {
   private initAbortController?: AbortController;
   // Debounce timer for map initialization
   private initDebounceTimer?: ReturnType<typeof setTimeout>;
+  // Minimum time between map reinitializations (ms)
+  private static readonly REINIT_DEBOUNCE_MS = 100;
+  // Last time map was initialized
+  private lastInitTime = 0;
 
   globalCSS = getGlobalStyles(config.theme2);
 
@@ -245,6 +249,25 @@ export class GeomapPanel extends Component<Props, State> {
       // Do not initialize new map or dispose old map
       return;
     }
+
+    // Throttle reinitializations to prevent WebGL context exhaustion
+    const now = Date.now();
+    const timeSinceLastInit = now - this.lastInitTime;
+
+    if (timeSinceLastInit < GeomapPanel.REINIT_DEBOUNCE_MS) {
+      // Clear any existing debounce timer
+      if (this.initDebounceTimer) {
+        clearTimeout(this.initDebounceTimer);
+      }
+      // Schedule initialization after debounce period
+      this.initDebounceTimer = setTimeout(() => {
+        this.initDebounceTimer = undefined;
+        this.initMapAsync(div);
+      }, GeomapPanel.REINIT_DEBOUNCE_MS - timeSinceLastInit);
+      return;
+    }
+
+    this.lastInitTime = now;
 
     // Cancel any pending initialization to prevent WebGL context leaks
     this.initAbortController?.abort();

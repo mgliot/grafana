@@ -24,72 +24,79 @@ export const xyzTiles: MapLayerRegistryItem<XYZConfig> = {
   description: 'Add map from a generic tile layer',
   isBaseMap: true,
 
-  create: async (
-    map: OpenLayersMap,
-    options: MapLayerOptions<XYZConfig>,
-    eventBus: EventBus,
-    theme: GrafanaTheme2
-  ) => ({
-    init: () => {
-      const cfg = { ...options.config };
-      if (!cfg.url) {
-        cfg.url = defaultXYZConfig.url;
-        cfg.attribution = cfg.attribution ?? defaultXYZConfig.attribution;
-      }
-      const noRepeat = options.noRepeat ?? false;
-      const interpolatedUrl = getTemplateSrv().replace(cfg.url);
-      const interpolatedAttribution = getTemplateSrv().replace(cfg.attribution);
+  create: async (map: OpenLayersMap, options: MapLayerOptions<XYZConfig>, eventBus: EventBus, theme: GrafanaTheme2) => {
+    let layer: TileLayer<XYZ> | undefined;
 
-      return new TileLayer({
-        source: new XYZ({
-          url: interpolatedUrl,
-          attributions: interpolatedAttribution,
-          wrapX: !noRepeat,
+    return {
+      init: () => {
+        const cfg = { ...options.config };
+        if (!cfg.url) {
+          cfg.url = defaultXYZConfig.url;
+          cfg.attribution = cfg.attribution ?? defaultXYZConfig.attribution;
+        }
+        const noRepeat = options.noRepeat ?? false;
+        const interpolatedUrl = getTemplateSrv().replace(cfg.url);
+        const interpolatedAttribution = getTemplateSrv().replace(cfg.attribution);
+
+        layer = new TileLayer({
+          source: new XYZ({
+            url: interpolatedUrl,
+            attributions: interpolatedAttribution,
+            wrapX: !noRepeat,
+            minZoom: cfg.minZoom,
+            maxZoom: cfg.maxZoom,
+          }),
           minZoom: cfg.minZoom,
-          maxZoom: cfg.maxZoom,
-        }),
-        minZoom: cfg.minZoom,
-      });
-    },
-    registerOptionsUI: (builder) => {
-      builder
-        .addTextInput({
-          path: 'config.url',
-          name: 'URL template',
-          description: 'Must include {x}, {y} or {-y}, and {z} placeholders. Dashboard variables are supported.',
-          settings: {
-            placeholder: defaultXYZConfig.url,
-          },
-        })
-        .addTextInput({
-          path: 'config.attribution',
-          name: 'Attribution',
-          settings: {
-            placeholder: defaultXYZConfig.attribution,
-          },
-        })
-        .addNumberInput({
-          path: 'config.minZoom',
-          name: 'Min zoom',
-          description: 'Minimum zoom level. Tiles are not loaded below this level.',
-          settings: {
-            placeholder: '0',
-            min: 0,
-            max: 30,
-          },
-        })
-        .addNumberInput({
-          path: 'config.maxZoom',
-          name: 'Max zoom',
-          description: 'Maximum zoom level provided by the server. Beyond this level, tiles are upscaled.',
-          settings: {
-            placeholder: '18',
-            min: 0,
-            max: 30,
-          },
         });
-    },
-  }),
+        return layer;
+      },
+      dispose: () => {
+        if (layer) {
+          layer.getSource()?.dispose();
+          layer.dispose();
+          layer = undefined;
+        }
+      },
+      registerOptionsUI: (builder) => {
+        builder
+          .addTextInput({
+            path: 'config.url',
+            name: 'URL template',
+            description: 'Must include {x}, {y} or {-y}, and {z} placeholders. Dashboard variables are supported.',
+            settings: {
+              placeholder: defaultXYZConfig.url,
+            },
+          })
+          .addTextInput({
+            path: 'config.attribution',
+            name: 'Attribution',
+            settings: {
+              placeholder: defaultXYZConfig.attribution,
+            },
+          })
+          .addNumberInput({
+            path: 'config.minZoom',
+            name: 'Min zoom',
+            description: 'Minimum zoom level. Tiles are not loaded below this level.',
+            settings: {
+              placeholder: '0',
+              min: 0,
+              max: 30,
+            },
+          })
+          .addNumberInput({
+            path: 'config.maxZoom',
+            name: 'Max zoom',
+            description: 'Maximum zoom level provided by the server. Beyond this level, tiles are upscaled.',
+            settings: {
+              placeholder: '18',
+              min: 0,
+              max: 30,
+            },
+          });
+      },
+    };
+  },
 };
 
 export const genericLayers = [xyzTiles];

@@ -38,52 +38,65 @@ export const carto: MapLayerRegistryItem<CartoConfig> = {
     options: MapLayerOptions<CartoConfig>,
     eventBus: EventBus,
     theme: GrafanaTheme2
-  ) => ({
-    init: () => {
-      const cfg = { ...defaultCartoConfig, ...options.config };
-      let style: string | undefined = cfg.theme;
-      if (!style || style === LayerTheme.Auto) {
-        style = theme.isDark ? 'dark' : 'light';
-      }
-      if (cfg.showLabels) {
-        style += '_all';
-      } else {
-        style += '_nolabels';
-      }
-      const scale = window.devicePixelRatio > 1 ? '@2x' : '';
-      const noRepeat = options.noRepeat ?? false;
+  ) => {
+    let layer: TileLayer<XYZ> | undefined;
 
-      return new TileLayer({
-        source: new XYZ({
-          attributions: `<a href="https://carto.com/attribution/">©CARTO</a> <a href="https://www.openstreetmap.org/copyright">©OpenStreetMap</a> contributors`,
-          url: `https://{1-4}.basemaps.cartocdn.com/${style}/{z}/{x}/{y}${scale}.png`,
-          wrapX: !noRepeat,
-        }),
-      });
-    },
+    return {
+      init: () => {
+        const cfg = { ...defaultCartoConfig, ...options.config };
+        let style: string | undefined = cfg.theme;
+        if (!style || style === LayerTheme.Auto) {
+          style = theme.isDark ? 'dark' : 'light';
+        }
+        if (cfg.showLabels) {
+          style += '_all';
+        } else {
+          style += '_nolabels';
+        }
+        const scale = window.devicePixelRatio > 1 ? '@2x' : '';
+        const noRepeat = options.noRepeat ?? false;
 
-    registerOptionsUI: (builder) => {
-      builder
-        .addRadio({
-          path: 'config.theme',
-          name: 'Theme',
-          settings: {
-            options: [
-              { value: LayerTheme.Auto, label: 'Auto', description: 'Match grafana theme' },
-              { value: LayerTheme.Light, label: 'Light' },
-              { value: LayerTheme.Dark, label: 'Dark' },
-            ],
-          },
-          defaultValue: defaultCartoConfig.theme!,
-        })
-        .addBooleanSwitch({
-          path: 'config.showLabels',
-          name: 'Show labels',
-          description: '',
-          defaultValue: defaultCartoConfig.showLabels,
+        layer = new TileLayer({
+          source: new XYZ({
+            attributions: `<a href="https://carto.com/attribution/">©CARTO</a> <a href="https://www.openstreetmap.org/copyright">©OpenStreetMap</a> contributors`,
+            url: `https://{1-4}.basemaps.cartocdn.com/${style}/{z}/{x}/{y}${scale}.png`,
+            wrapX: !noRepeat,
+          }),
         });
-    },
-  }),
+        return layer;
+      },
+
+      dispose: () => {
+        if (layer) {
+          layer.getSource()?.dispose();
+          layer.dispose();
+          layer = undefined;
+        }
+      },
+
+      registerOptionsUI: (builder) => {
+        builder
+          .addRadio({
+            path: 'config.theme',
+            name: 'Theme',
+            settings: {
+              options: [
+                { value: LayerTheme.Auto, label: 'Auto', description: 'Match grafana theme' },
+                { value: LayerTheme.Light, label: 'Light' },
+                { value: LayerTheme.Dark, label: 'Dark' },
+              ],
+            },
+            defaultValue: defaultCartoConfig.theme!,
+          })
+          .addBooleanSwitch({
+            path: 'config.showLabels',
+            name: 'Show labels',
+            description: '',
+            defaultValue: defaultCartoConfig.showLabels,
+          });
+      },
+    };
+  },
 };
 
 export const cartoLayers = [carto];

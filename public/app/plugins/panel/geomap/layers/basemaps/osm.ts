@@ -14,15 +14,27 @@ export const standard: MapLayerRegistryItem = {
    * Function that configures transformation and returns a transformer
    * @param options
    */
-  create: async (map: OpenLayersMap, options: MapLayerOptions, eventBus: EventBus) => ({
-    init: () => {
-      const noRepeat = options.noRepeat ?? false;
+  create: async (map: OpenLayersMap, options: MapLayerOptions, eventBus: EventBus) => {
+    let layer: TileLayer<OSM> | undefined;
 
-      return new TileLayer({
-        source: new OSM({ wrapX: !noRepeat }),
-      });
-    },
-  }),
+    return {
+      init: () => {
+        const noRepeat = options.noRepeat ?? false;
+
+        layer = new TileLayer({
+          source: new OSM({ wrapX: !noRepeat }),
+        });
+        return layer;
+      },
+      dispose: () => {
+        if (layer) {
+          layer.getSource()?.dispose();
+          layer.dispose();
+          layer = undefined;
+        }
+      },
+    };
+  },
 };
 
 export const osmLayers = [standard];
