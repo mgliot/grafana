@@ -66,6 +66,8 @@ export class GeomapPanel extends Component<Props, State> {
   private initGeneration = 0;
   // AbortController to cancel pending async initialization
   private initAbortController?: AbortController;
+  // Debounce timer for map initialization
+  private initDebounceTimer?: ReturnType<typeof setTimeout>;
 
   globalCSS = getGlobalStyles(config.theme2);
 
@@ -116,6 +118,10 @@ export class GeomapPanel extends Component<Props, State> {
   componentWillUnmount() {
     // Cancel any pending async initialization
     this.initAbortController?.abort();
+    // Clear any pending debounce timer
+    if (this.initDebounceTimer) {
+      clearTimeout(this.initDebounceTimer);
+    }
     this.subs.unsubscribe();
     for (const lyr of this.layers) {
       lyr.handler.dispose?.();
@@ -249,6 +255,7 @@ export class GeomapPanel extends Component<Props, State> {
     this.mapDiv = div;
 
     // Dispose old map synchronously before creating new one
+    const hadPreviousMap = !!this.map;
     if (this.map) {
       // Dispose layers BEFORE disposing map to properly release WebGL contexts
       for (const lyr of this.layers) {
@@ -257,6 +264,20 @@ export class GeomapPanel extends Component<Props, State> {
       this.map.dispose();
       this.map = undefined;
       this.layers = [];
+      this.byName.clear();
+    }
+
+    // If we disposed a previous map, wait a frame to allow WebGL context cleanup
+    // This helps prevent "Too many active WebGL contexts" warnings
+    if (hadPreviousMap) {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+
+      // Check if aborted during the wait
+      if (signal.aborted || currentGeneration !== this.initGeneration) {
+        return;
+      }
     }
 
     const { options } = this.props;
@@ -500,6 +521,11 @@ export class GeomapPanel extends Component<Props, State> {
   }
 
   initMapRef = (div: HTMLDivElement | null) => {
+    // Only reinitialize if the div reference actually changed
+    // This prevents unnecessary reinitialization on React re-renders
+    if (div === this.mapDiv && this.map) {
+      return;
+    }
     this.initMapAsync(div);
   };
 

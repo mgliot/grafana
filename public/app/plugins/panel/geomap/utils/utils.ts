@@ -102,7 +102,8 @@ export const hasVariableDependencies = (obj: object): boolean => {
 
 export const getNewOpenLayersMap = (panel: GeomapPanel, options: Options, div: HTMLDivElement) => {
   const view = panel.initMapView(options.view);
-  return (panel.map = new OpenLayersMap({
+  // Don't assign to panel.map here - let the caller handle assignment after async operations complete
+  return new OpenLayersMap({
     view: view,
     pixelRatio: window.devicePixelRatio, // or zoom?
     layers: [], // loaded explicitly below
@@ -111,7 +112,7 @@ export const getNewOpenLayersMap = (panel: GeomapPanel, options: Options, div: H
     interactions: interactionDefaults({
       mouseWheelZoom: false, // managed by initControls
     }),
-  }));
+  });
 };
 
 export const updateMap = (panel: GeomapPanel, options: Options) => {
